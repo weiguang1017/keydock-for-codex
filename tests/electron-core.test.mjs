@@ -16,13 +16,24 @@ function tempDir(name) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `keydock-${name}-`));
 }
 
+function quoteForCmd(value) {
+  return `"${String(value).replaceAll('"', '""')}"`;
+}
+
+function quoteForSh(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
 function writeFakeCodex(directory) {
   const codexPath = path.join(directory, process.platform === 'win32' ? 'codex.cmd' : 'codex');
   const capturePath = path.join(directory, 'stdin.txt');
-  const script = process.platform === 'win32'
-    ? `@echo off\r\nif "%1"=="login" if "%2"=="--with-api-key" goto login\r\nif "%1"=="login" if "%2"=="status" goto status\r\necho unexpected args 1>&2\r\nexit /b 2\r\n:login\r\nset /p KEY=\r\n<nul set /p=%KEY% > "${capturePath}"\r\necho login ok\r\nexit /b 0\r\n:status\r\necho Logged in using an API key - sk-test***7890\r\nexit /b 0\r\n`
-    : `#!/bin/sh\nif [ "$1" = "login" ] && [ "$2" = "--with-api-key" ]; then\n  IFS= read -r KEY\n  printf '%s' "$KEY" > '${capturePath}'\n  printf 'login ok\\n'\n  exit 0\nfi\nif [ "$1" = "login" ] && [ "$2" = "status" ]; then\n  printf 'Logged in using an API key - sk-test***7890\\n'\n  exit 0\nfi\nprintf 'unexpected args\\n' >&2\nexit 2\n`;
-  fs.writeFileSync(codexPath, script, { mode: 0o755 });
+  const scriptPath = path.join(directory, 'fake-codex.mjs');
+  const script = `import fs from 'node:fs';\n\nconst capturePath = ${JSON.stringify(capturePath)};\nconst args = process.argv.slice(2);\n\nif (args[0] === 'login' && args[1] === '--with-api-key') {\n  const chunks = [];\n  for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));\n  const input = Buffer.concat(chunks).toString('utf8').replace(/(?:\\r\\n|\\n|\\r)$/, '');\n  fs.writeFileSync(capturePath, input);\n  console.log('login ok');\n  process.exit(0);\n}\n\nif (args[0] === 'login' && args[1] === 'status') {\n  console.log('Logged in using an API key - sk-test***7890');\n  process.exit(0);\n}\n\nconsole.error('unexpected args');\nprocess.exit(2);\n`;
+  const launcher = process.platform === 'win32'
+    ? `@echo off\r\n${quoteForCmd(process.execPath)} ${quoteForCmd(scriptPath)} %*\r\nexit /b %ERRORLEVEL%\r\n`
+    : `#!/bin/sh\nexec ${quoteForSh(process.execPath)} ${quoteForSh(scriptPath)} "$@"\n`;
+  fs.writeFileSync(scriptPath, script);
+  fs.writeFileSync(codexPath, launcher, { mode: 0o755 });
   return { codexPath, capturePath };
 }
 
@@ -38,8 +49,8 @@ assert.equal(apiKeyStdin('  sk-test-newline  ', 'win32'), 'sk-test-newline\r\n')
 
 const winInvocation = commandInvocation('C:\\Tools\\codex.cmd', ['login', '--with-api-key'], 'win32', 'C:\\Windows\\System32\\cmd.exe');
 assert.equal(winInvocation.command, 'C:\\Windows\\System32\\cmd.exe');
-assert.deepEqual(winInvocation.args, ['/d', '/s', '/c', '""C:\\Tools\\codex.cmd" "login" "--with-api-key""']);
-assert.equal(winInvocation.windowsVerbatimArguments, true);
+assert.deepEqual(winInvocation.args, ['/d', '/c', 'call', 'C:\\Tools\\codex.cmd', 'login', '--with-api-key']);
+assert.equal(winInvocation.windowsVerbatimArguments, false);
 
 const storeDir = tempDir('store');
 const store = new KeydockStore(storeDir, null);

@@ -205,11 +205,6 @@ export function validateKey(apiKey, options = {}) {
   });
 }
 
-function quoteForCmd(value) {
-  const text = String(value);
-  return `"${text.replaceAll('"', '""')}"`;
-}
-
 export function commandInvocation(command, args, platform = process.platform, comSpec = process.env.ComSpec) {
   if (platform !== 'win32') {
     return { command, args, windowsVerbatimArguments: false };
@@ -218,12 +213,10 @@ export function commandInvocation(command, args, platform = process.platform, co
   if (extension !== '.cmd' && extension !== '.bat') {
     return { command, args, windowsVerbatimArguments: false };
   }
-  const innerCommandLine = [quoteForCmd(command), ...args.map(quoteForCmd)].join(' ');
-  const commandLine = `"${innerCommandLine}"`;
   return {
     command: comSpec || 'cmd.exe',
-    args: ['/d', '/s', '/c', commandLine],
-    windowsVerbatimArguments: true
+    args: ['/d', '/c', 'call', command, ...args],
+    windowsVerbatimArguments: false
   };
 }
 
