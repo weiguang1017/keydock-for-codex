@@ -19,7 +19,7 @@ function writeFakeCodex(directory) {
   const codexPath = path.join(directory, process.platform === 'win32' ? 'codex.cmd' : 'codex');
   const capturePath = path.join(directory, 'stdin.txt');
   const script = process.platform === 'win32'
-    ? `@echo off\r\nif "%1"=="login" if "%2"=="--with-api-key" (set /p KEY=& <nul set /p=%KEY% > "${capturePath}"& echo login ok& exit /b 0)\r\nif "%1"=="login" if "%2"=="status" (echo Logged in using an API key - sk-test***7890& exit /b 0)\r\necho unexpected args 1>&2\r\nexit /b 2\r\n`
+    ? `@echo off\r\nif "%1"=="login" if "%2"=="--with-api-key" goto login\r\nif "%1"=="login" if "%2"=="status" goto status\r\necho unexpected args 1>&2\r\nexit /b 2\r\n:login\r\nset /p KEY=\r\n<nul set /p=%KEY% > "${capturePath}"\r\necho login ok\r\nexit /b 0\r\n:status\r\necho Logged in using an API key - sk-test***7890\r\nexit /b 0\r\n`
     : `#!/bin/sh\nif [ "$1" = "login" ] && [ "$2" = "--with-api-key" ]; then\n  IFS= read -r KEY\n  printf '%s' "$KEY" > '${capturePath}'\n  printf 'login ok\\n'\n  exit 0\nfi\nif [ "$1" = "login" ] && [ "$2" = "status" ]; then\n  printf 'Logged in using an API key - sk-test***7890\\n'\n  exit 0\nfi\nprintf 'unexpected args\\n' >&2\nexit 2\n`;
   fs.writeFileSync(codexPath, script, { mode: 0o755 });
   return { codexPath, capturePath };
@@ -30,7 +30,8 @@ assert.equal(maskKey('abcd1234'), '***');
 
 const winInvocation = commandInvocation('C:\\Tools\\codex.cmd', ['login', '--with-api-key'], 'win32', 'C:\\Windows\\System32\\cmd.exe');
 assert.equal(winInvocation.command, 'C:\\Windows\\System32\\cmd.exe');
-assert.deepEqual(winInvocation.args, ['/d', '/s', '/c', '"C:\\Tools\\codex.cmd" "login" "--with-api-key"']);
+assert.deepEqual(winInvocation.args, ['/d', '/s', '/c', '""C:\\Tools\\codex.cmd" "login" "--with-api-key""']);
+assert.equal(winInvocation.windowsVerbatimArguments, true);
 
 const storeDir = tempDir('store');
 const store = new KeydockStore(storeDir, null);

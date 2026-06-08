@@ -212,16 +212,18 @@ function quoteForCmd(value) {
 
 export function commandInvocation(command, args, platform = process.platform, comSpec = process.env.ComSpec) {
   if (platform !== 'win32') {
-    return { command, args };
+    return { command, args, windowsVerbatimArguments: false };
   }
   const extension = path.extname(command).toLowerCase();
   if (extension !== '.cmd' && extension !== '.bat') {
-    return { command, args };
+    return { command, args, windowsVerbatimArguments: false };
   }
-  const commandLine = [quoteForCmd(command), ...args.map(quoteForCmd)].join(' ');
+  const innerCommandLine = [quoteForCmd(command), ...args.map(quoteForCmd)].join(' ');
+  const commandLine = `"${innerCommandLine}"`;
   return {
     command: comSpec || 'cmd.exe',
-    args: ['/d', '/s', '/c', commandLine]
+    args: ['/d', '/s', '/c', commandLine],
+    windowsVerbatimArguments: true
   };
 }
 
@@ -231,6 +233,7 @@ export function runCommand(command, args = [], options = {}) {
     const child = spawn(invocation.command, invocation.args, {
       env: { ...process.env, ...(options.env || {}) },
       shell: false,
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       windowsHide: true
     });
     let stdout = '';
