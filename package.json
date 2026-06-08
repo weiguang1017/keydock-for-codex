@@ -1,0 +1,49 @@
+{
+  "name": "keydock-for-codex",
+  "version": "1.0.0",
+  "description": "A desktop key dock for checking and switching Codex API keys.",
+  "main": "electron/main.mjs",
+  "author": "Keydock contributors",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "start": "electron electron/main.mjs",
+    "test": "node tests/electron-core.test.mjs",
+    "dist": "electron-builder --publish never"
+  },
+  "devDependencies": {
+    "electron": "latest",
+    "electron-builder": "latest"
+  },
+  "build": {
+    "appId": "dev.keydock.codex",
+    "productName": "Keydock for Codex",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ]
+    },
+    "linux": {
+      "category": "Development",
+      "target": [
+        "AppImage",
+        "deb"
+      ]
+    }
+  }
+}

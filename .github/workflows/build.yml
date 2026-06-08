@@ -1,0 +1,60 @@
+name: Build desktop apps
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  native-macos:
+    name: Native macOS app
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Test native app
+        run: make test
+      - name: Build native app
+        run: make app
+      - name: Package native app
+        run: ditto -c -k --sequesterRsrc --keepParent "build/Keydock for Codex.app" "Keydock-for-Codex-native-macos.zip"
+      - name: Upload native artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Keydock-for-Codex-native-macos
+          path: Keydock-for-Codex-native-macos.zip
+
+  electron:
+    name: Electron ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - windows-latest
+          - ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install
+      - name: Test Electron core
+        run: npm test
+      - name: Build app package
+        run: npm run dist
+      - name: Upload app artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Keydock-for-Codex-${{ runner.os }}
+          path: |
+            dist/**
+            !dist/**/*.blockmap
+            !dist/builder-debug.yml
+            !dist/builder-effective-config.yaml

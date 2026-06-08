@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Keydock for Codex</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="mark">K</div>
+          <div>
+            <h1>Keydock</h1>
+            <p>for Codex</p>
+          </div>
+        </div>
+        <button id="addButton" class="icon-button" title="Add API key">+</button>
+        <div id="keyList" class="key-list"></div>
+      </aside>
+
+      <section class="detail">
+        <header class="detail-header">
+          <div>
+            <p class="eyebrow">Active key station</p>
+            <h2 id="detailTitle">No key selected</h2>
+          </div>
+          <div id="diag" class="diag">Checking Codex CLI...</div>
+        </header>
+
+        <div class="fields">
+          <label>
+            <span>Name</span>
+            <input id="nameField" type="text" autocomplete="off">
+          </label>
+          <label>
+            <span>Masked key</span>
+            <input id="maskedField" type="text" readonly>
+          </label>
+          <label>
+            <span>Status</span>
+            <input id="statusField" type="text" readonly>
+          </label>
+          <label>
+            <span>Last checked</span>
+            <input id="checkedField" type="text" readonly>
+          </label>
+        </div>
+
+        <div class="actions">
+          <button id="saveNameButton">Save name</button>
+          <button id="checkButton">Check key</button>
+          <button id="switchButton" class="primary">Switch & restart</button>
+          <button id="deleteButton" class="danger">Delete</button>
+        </div>
+
+        <footer>
+          <div id="busy" class="spinner hidden"></div>
+          <p id="message">Terminal Codex sessions must be reopened after switching.</p>
+        </footer>
+      </section>
+    </main>
+
+    <dialog id="addDialog">
+      <form method="dialog">
+        <h3>Add API key</h3>
+        <label>
+          <span>Name</span>
+          <input id="newName" type="text" value="OpenAI key">
+        </label>
+        <label>
+          <span>API key</span>
+          <input id="newKey" type="password" autocomplete="off">
+        </label>
+        <menu>
+          <button value="cancel">Cancel</button>
+          <button id="confirmAdd" value="default" class="primary">Add</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>
