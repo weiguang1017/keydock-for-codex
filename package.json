@@ -26,8 +26,11 @@
     "directories": {
       "output": "dist"
     },
+    "asar": false,
+    "afterPack": "scripts/clean-appledouble.cjs",
     "files": [
       "electron/**/*",
+      "!**/._*",
       "package.json"
     ],
     "mac": {

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   KeydockStore,
+  apiKeyStdin,
   commandInvocation,
   findCodexPath,
   loginWithCodex,
@@ -25,8 +26,15 @@ function writeFakeCodex(directory) {
   return { codexPath, capturePath };
 }
 
+function prependToPath(directory) {
+  const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === 'path') || 'PATH';
+  process.env[pathKey] = `${directory}${path.delimiter}${process.env[pathKey] || ''}`;
+}
+
 assert.equal(maskKey('sk-1234567890abcdef'), 'sk-1234...cdef');
 assert.equal(maskKey('abcd1234'), '***');
+assert.equal(apiKeyStdin('  sk-test-newline  ', 'darwin'), 'sk-test-newline\n');
+assert.equal(apiKeyStdin('  sk-test-newline  ', 'win32'), 'sk-test-newline\r\n');
 
 const winInvocation = commandInvocation('C:\\Tools\\codex.cmd', ['login', '--with-api-key'], 'win32', 'C:\\Windows\\System32\\cmd.exe');
 assert.equal(winInvocation.command, 'C:\\Windows\\System32\\cmd.exe');
@@ -46,7 +54,7 @@ assert.equal(check.valid, true);
 
 const fakeDir = tempDir('codex');
 const { codexPath, capturePath } = writeFakeCodex(fakeDir);
-process.env.PATH = `${fakeDir}${path.delimiter}${process.env.PATH || ''}`;
+prependToPath(fakeDir);
 const found = await findCodexPath();
 assert.equal(fs.existsSync(found), true);
 assert.equal(path.basename(found).toLowerCase(), path.basename(codexPath).toLowerCase());

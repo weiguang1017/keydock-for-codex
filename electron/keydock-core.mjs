@@ -227,6 +227,11 @@ export function commandInvocation(command, args, platform = process.platform, co
   };
 }
 
+export function apiKeyStdin(apiKey, platform = process.platform) {
+  const lineEnding = platform === 'win32' ? '\r\n' : '\n';
+  return `${trim(apiKey)}${lineEnding}`;
+}
+
 export function runCommand(command, args = [], options = {}) {
   return new Promise((resolve, reject) => {
     const invocation = commandInvocation(command, args);
@@ -307,7 +312,7 @@ export async function findCodexPath() {
 
 export async function loginWithCodex(apiKey, codexPath) {
   const login = await runCommand(codexPath, ['login', '--with-api-key'], {
-    stdin: `${trim(apiKey)}\n`,
+    stdin: apiKeyStdin(apiKey),
     timeoutMs: 30000
   });
   if (login.status !== 0) {

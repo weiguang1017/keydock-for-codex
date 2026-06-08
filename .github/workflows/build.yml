@@ -32,6 +32,7 @@ jobs:
     env:
       ELECTRON_CACHE: .cache/electron
       ELECTRON_BUILDER_CACHE: .cache/electron-builder
+      COPYFILE_DISABLE: 1
       npm_config_fetch_retries: 5
       npm_config_fetch_retry_factor: 2
       npm_config_fetch_retry_mintimeout: 20000
