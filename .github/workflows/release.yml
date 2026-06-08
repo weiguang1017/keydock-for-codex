@@ -36,7 +36,17 @@ jobs:
           node-version: 22
 
       - name: Install dependencies
-        run: npm install --ignore-scripts --no-audit --no-fund
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4; do
+            echo "Dependency install attempt ${attempt}"
+            if npm install --ignore-scripts --no-audit --no-fund; then
+              exit 0
+            fi
+            rm -rf node_modules
+            sleep $((attempt * 20))
+          done
+          npm install --ignore-scripts --no-audit --no-fund
 
       - name: Test
         run: npm test
@@ -105,3 +115,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: release-assets/*
+          generate_release_notes: true
+          body: |
+            Desktop installers for Keydock for Codex.
+
+            - macOS Universal supports both Apple Silicon and Intel Macs.
+            - Windows x64 is for 64-bit Windows.
+            - Linux x64 is available as AppImage and deb.
