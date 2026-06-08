@@ -12,11 +12,12 @@
   "scripts": {
     "start": "electron electron/main.mjs",
     "test": "node tests/electron-core.test.mjs",
-    "dist": "electron-builder --publish never"
+    "dist": "electron-builder --publish never",
+    "pack": "electron-builder --dir --publish never"
   },
   "devDependencies": {
-    "electron": "latest",
-    "electron-builder": "latest"
+    "electron": "39.2.6",
+    "electron-builder": "26.0.12"
   },
   "build": {
     "appId": "dev.keydock.codex",
@@ -33,7 +34,8 @@
       "target": [
         "dmg",
         "zip"
-      ]
+      ],
+      "identity": null
     },
     "win": {
       "target": [

@@ -48,13 +48,24 @@ jobs:
       - name: Test Electron core
         run: npm test
       - name: Build app package
-        run: npm run dist
+        run: npm run pack
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+      - name: Archive Electron app on macOS
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent "dist/mac-"* "/tmp/Keydock-for-Codex-Electron-macOS.zip"
+      - name: Archive Electron app on Linux
+        if: runner.os == 'Linux'
+        run: tar -C dist -czf /tmp/Keydock-for-Codex-Electron-Linux.tar.gz linux-unpacked
+      - name: Archive Electron app on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path "dist\\win-unpacked" -DestinationPath "$env:RUNNER_TEMP\\Keydock-for-Codex-Electron-Windows.zip"
       - name: Upload app artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Keydock-for-Codex-${{ runner.os }}
           path: |
-            dist/**
-            !dist/**/*.blockmap
-            !dist/builder-debug.yml
-            !dist/builder-effective-config.yaml
+            /tmp/Keydock-for-Codex-Electron-macOS.zip
+            /tmp/Keydock-for-Codex-Electron-Linux.tar.gz
+            ${{ runner.temp }}/Keydock-for-Codex-Electron-Windows.zip
