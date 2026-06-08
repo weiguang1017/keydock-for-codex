@@ -3,7 +3,10 @@
   "version": "1.0.0",
   "description": "A desktop key dock for checking and switching Codex API keys.",
   "main": "electron/main.mjs",
-  "author": "Keydock contributors",
+  "author": {
+    "name": "Keydock contributors",
+    "email": "keydock@example.com"
+  },
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -40,6 +43,7 @@
     },
     "linux": {
       "category": "Development",
+      "maintainer": "Keydock contributors <keydock@example.com>",
       "target": [
         "AppImage",
         "deb"
