@@ -205,9 +205,30 @@ export function validateKey(apiKey, options = {}) {
   });
 }
 
+function quoteForCmd(value) {
+  const text = String(value);
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+export function commandInvocation(command, args, platform = process.platform, comSpec = process.env.ComSpec) {
+  if (platform !== 'win32') {
+    return { command, args };
+  }
+  const extension = path.extname(command).toLowerCase();
+  if (extension !== '.cmd' && extension !== '.bat') {
+    return { command, args };
+  }
+  const commandLine = [quoteForCmd(command), ...args.map(quoteForCmd)].join(' ');
+  return {
+    command: comSpec || 'cmd.exe',
+    args: ['/d', '/s', '/c', commandLine]
+  };
+}
+
 export function runCommand(command, args = [], options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const invocation = commandInvocation(command, args);
+    const child = spawn(invocation.command, invocation.args, {
       env: { ...process.env, ...(options.env || {}) },
       shell: false,
       windowsHide: true

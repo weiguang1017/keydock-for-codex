@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   KeydockStore,
+  commandInvocation,
   findCodexPath,
   loginWithCodex,
   maskKey,
@@ -26,6 +27,10 @@ function writeFakeCodex(directory) {
 
 assert.equal(maskKey('sk-1234567890abcdef'), 'sk-1234...cdef');
 assert.equal(maskKey('abcd1234'), '***');
+
+const winInvocation = commandInvocation('C:\\Tools\\codex.cmd', ['login', '--with-api-key'], 'win32', 'C:\\Windows\\System32\\cmd.exe');
+assert.equal(winInvocation.command, 'C:\\Windows\\System32\\cmd.exe');
+assert.deepEqual(winInvocation.args, ['/d', '/s', '/c', '"C:\\Tools\\codex.cmd" "login" "--with-api-key"']);
 
 const storeDir = tempDir('store');
 const store = new KeydockStore(storeDir, null);
