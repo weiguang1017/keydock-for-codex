@@ -30,8 +30,8 @@ jobs:
     name: Electron ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     env:
-      ELECTRON_CACHE: .cache/electron
-      ELECTRON_BUILDER_CACHE: .cache/electron-builder
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
       COPYFILE_DISABLE: 1
       npm_config_fetch_retries: 5
       npm_config_fetch_retry_factor: 2
@@ -57,8 +57,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            .cache/electron
-            .cache/electron-builder
+            ${{ github.workspace }}/.cache/electron
+            ${{ github.workspace }}/.cache/electron-builder
           key: electron-${{ runner.os }}-${{ hashFiles('package.json') }}
           restore-keys: |
             electron-${{ runner.os }}-

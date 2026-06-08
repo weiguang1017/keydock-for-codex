@@ -21,8 +21,8 @@ jobs:
           - ubuntu-latest
 
     env:
-      ELECTRON_CACHE: .cache/electron
-      ELECTRON_BUILDER_CACHE: .cache/electron-builder
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
       COPYFILE_DISABLE: 1
       CSC_IDENTITY_AUTO_DISCOVERY: false
       npm_config_audit: false
