@@ -41,20 +41,47 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Build macOS universal installers
+        if: runner.os == 'macOS'
+        run: npm run dist -- --mac --universal
+
       - name: Build installers
+        if: runner.os != 'macOS'
         run: npm run dist
 
       - name: Collect release files
         shell: bash
         run: |
           mkdir -p release-assets
-          find dist -maxdepth 1 -type f \( \
-            -name "*.dmg" -o \
-            -name "*.zip" -o \
-            -name "*.exe" -o \
-            -name "*.AppImage" -o \
-            -name "*.deb" \
-          \) -exec cp {} release-assets/ \;
+
+          case "$RUNNER_OS" in
+            macOS)
+              dmg="$(find dist -maxdepth 1 -type f -name "*.dmg" | head -n 1)"
+              zip="$(find dist -maxdepth 1 -type f -name "*.zip" | head -n 1)"
+              test -n "$dmg"
+              test -n "$zip"
+              cp "$dmg" "release-assets/Keydock-for-Codex-macOS-universal.dmg"
+              cp "$zip" "release-assets/Keydock-for-Codex-macOS-universal.zip"
+              ;;
+            Windows)
+              exe="$(find dist -maxdepth 1 -type f -name "*.exe" | head -n 1)"
+              zip="$(find dist -maxdepth 1 -type f -name "*.zip" | head -n 1)"
+              test -n "$exe"
+              test -n "$zip"
+              cp "$exe" "release-assets/Keydock-for-Codex-Windows-x64.exe"
+              cp "$zip" "release-assets/Keydock-for-Codex-Windows-x64.zip"
+              ;;
+            Linux)
+              appimage="$(find dist -maxdepth 1 -type f -name "*.AppImage" | head -n 1)"
+              deb="$(find dist -maxdepth 1 -type f -name "*.deb" | head -n 1)"
+              test -n "$appimage"
+              test -n "$deb"
+              cp "$appimage" "release-assets/Keydock-for-Codex-Linux-x64.AppImage"
+              cp "$deb" "release-assets/Keydock-for-Codex-Linux-x64.deb"
+              ;;
+          esac
+
+          find release-assets -maxdepth 1 -type f -print
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
