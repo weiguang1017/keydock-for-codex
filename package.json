@@ -13,7 +13,8 @@
     "start": "electron electron/main.mjs",
     "test": "node tests/electron-core.test.mjs",
     "dist": "electron-builder --publish never",
-    "pack": "electron-builder --dir --publish never"
+    "pack": "electron-builder --dir --publish never",
+    "postinstall": "node scripts/skip-electron-postinstall.mjs"
   },
   "devDependencies": {
     "electron": "39.2.6",

@@ -19,7 +19,7 @@ Keydock for Codex 是一款桌面端 Codex API Key 管理器，解决多账号�
 - 新增 Key 时先校验，失败不保存。
 - 一键切换当前 Key，并通过 `codex login --with-api-key` 生效。
 - macOS 原生版使用 Keychain；跨平台 Electron 版使用系统安全存储能力。
-- GitHub Actions 自动构建 macOS、Windows、Linux 版本。
+- GitHub Actions 自动构建 macOS、Windows、Linux 应用压缩包。
 
 ### 构建
 
@@ -48,7 +48,7 @@ npm run pack
 - Electron Windows app
 - Electron Linux app
 
-构建结果在 GitHub 仓库的 `Actions` 页面下载。
+构建结果在 GitHub 仓库的 `Actions` 页面下载。Electron CI 产物是 unpacked 应用目录的压缩包，优先保证跨平台构建稳定。
 
 ## English
 
@@ -67,7 +67,7 @@ Keydock for Codex is a desktop API key manager for Codex. It helps users who wor
 - Validate a key before saving it.
 - Switch the active key via `codex login --with-api-key`.
 - Native macOS version stores secrets in Keychain; Electron version uses OS-backed secure storage when available.
-- GitHub Actions builds macOS, Windows, and Linux desktop artifacts automatically.
+- GitHub Actions builds macOS, Windows, and Linux app archives automatically.
 
 ### Build
 
@@ -96,4 +96,4 @@ Every push to `main` triggers GitHub Actions builds for:
 - Electron Windows app
 - Electron Linux app
 
-Download artifacts from the repository's `Actions` page.
+Download artifacts from the repository's `Actions` page. Electron CI artifacts are zipped unpacked app directories, which keeps cross-platform builds stable.

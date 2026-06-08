@@ -29,6 +29,15 @@ jobs:
   electron:
     name: Electron ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    env:
+      ELECTRON_CACHE: .cache/electron
+      ELECTRON_BUILDER_CACHE: .cache/electron-builder
+      npm_config_fetch_retries: 5
+      npm_config_fetch_retry_factor: 2
+      npm_config_fetch_retry_mintimeout: 20000
+      npm_config_fetch_retry_maxtimeout: 120000
+      npm_config_audit: false
+      npm_config_fund: false
     strategy:
       fail-fast: false
       matrix:
@@ -43,29 +52,75 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Install dependencies
-        run: npm install
+      - name: Restore Electron caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/electron
+            .cache/electron-builder
+          key: electron-${{ runner.os }}-${{ hashFiles('package.json') }}
+          restore-keys: |
+            electron-${{ runner.os }}-
+      - name: Install dependencies without Electron download
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4; do
+            echo "Dependency install attempt ${attempt}"
+            if npm install --ignore-scripts --no-audit --no-fund; then
+              exit 0
+            fi
+            rm -rf node_modules
+            sleep $((attempt * 20))
+          done
+          npm install --ignore-scripts --no-audit --no-fund
       - name: Test Electron core
         run: npm test
-      - name: Build app package
-        run: npm run pack
+      - name: Build app package with retry
+        shell: bash
+        run: |
+          for attempt in 1 2; do
+            echo "Pack attempt ${attempt}"
+            if npm run pack; then
+              exit 0
+            fi
+            rm -rf dist
+            sleep $((attempt * 30))
+          done
+          echo "Default Electron download source failed; retrying with mirror."
+          export ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
+          export ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-builder-binaries/"
+          rm -rf dist
+          for attempt in 1 2 3; do
+            echo "Mirror pack attempt ${attempt}"
+            if npm run pack; then
+              exit 0
+            fi
+            rm -rf dist
+            sleep $((attempt * 30))
+          done
+          npm run pack
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
+      - name: Prepare artifact directory
+        shell: bash
+        run: mkdir -p artifacts
       - name: Archive Electron app on macOS
         if: runner.os == 'macOS'
-        run: ditto -c -k --sequesterRsrc --keepParent "dist/mac-"* "/tmp/Keydock-for-Codex-Electron-macOS.zip"
+        shell: bash
+        run: |
+          app_dir="$(find dist -maxdepth 1 -type d \( -name 'mac' -o -name 'mac-*' \) | head -n 1)"
+          test -n "$app_dir"
+          ditto -c -k --sequesterRsrc --keepParent "$app_dir" "artifacts/Keydock-for-Codex-Electron-macOS.zip"
       - name: Archive Electron app on Linux
         if: runner.os == 'Linux'
-        run: tar -C dist -czf /tmp/Keydock-for-Codex-Electron-Linux.tar.gz linux-unpacked
+        run: tar -C dist -czf artifacts/Keydock-for-Codex-Electron-Linux.tar.gz linux-unpacked
       - name: Archive Electron app on Windows
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path "dist\\win-unpacked" -DestinationPath "$env:RUNNER_TEMP\\Keydock-for-Codex-Electron-Windows.zip"
+        run: Compress-Archive -Path "dist\\win-unpacked" -DestinationPath "artifacts\\Keydock-for-Codex-Electron-Windows.zip"
       - name: Upload app artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Keydock-for-Codex-${{ runner.os }}
-          path: |
-            /tmp/Keydock-for-Codex-Electron-macOS.zip
-            /tmp/Keydock-for-Codex-Electron-Linux.tar.gz
-            ${{ runner.temp }}/Keydock-for-Codex-Electron-Windows.zip
+          path: artifacts/*
+          if-no-files-found: error
