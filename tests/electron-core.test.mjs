@@ -6,9 +6,12 @@ import {
   KeydockStore,
   apiKeyStdin,
   commandInvocation,
+  extractModels,
   findCodexPath,
   loginWithCodex,
   maskKey,
+  modelEndpoint,
+  normalizeBaseUrl,
   validateKey
 } from '../electron/keydock-core.mjs';
 
@@ -46,6 +49,9 @@ assert.equal(maskKey('sk-1234567890abcdef'), 'sk-1234...cdef');
 assert.equal(maskKey('abcd1234'), '***');
 assert.equal(apiKeyStdin('  sk-test-newline  ', 'darwin'), 'sk-test-newline\n');
 assert.equal(apiKeyStdin('  sk-test-newline  ', 'win32'), 'sk-test-newline\r\n');
+assert.equal(normalizeBaseUrl('api.example.com/v1/'), 'https://api.example.com/v1');
+assert.equal(modelEndpoint('https://api.example.com/v1').toString(), 'https://api.example.com/v1/models');
+assert.deepEqual(extractModels({ data: [{ id: 'gpt-z' }, { id: 'gpt-a' }] }), ['gpt-a', 'gpt-z']);
 
 const winInvocation = commandInvocation('C:\\Tools\\codex.cmd', ['login', '--with-api-key'], 'win32', 'C:\\Windows\\System32\\cmd.exe');
 assert.equal(winInvocation.command, 'C:\\Windows\\System32\\cmd.exe');
@@ -54,14 +60,24 @@ assert.equal(winInvocation.windowsVerbatimArguments, false);
 
 const storeDir = tempDir('store');
 const store = new KeydockStore(storeDir, null);
-const record = store.add('Work', 'sk-test-1234567890');
+const record = store.add('Work', 'https://api.example.com/v1', 'sk-test-1234567890', {
+  valid: true,
+  statusCode: 200,
+  message: 'ok',
+  models: ['gpt-a', 'gpt-b']
+});
 assert.equal(store.list().length, 1);
 assert.equal(store.secret(record.id), 'sk-test-1234567890');
+assert.equal(record.baseUrl, 'https://api.example.com/v1');
+assert.equal(record.available, true);
+assert.equal(record.model, 'gpt-a');
+assert.deepEqual(record.models, ['gpt-a', 'gpt-b']);
 const metadata = fs.readFileSync(path.join(storeDir, 'keys.json'), 'utf8');
 assert.equal(metadata.includes('sk-test-1234567890'), false);
 
 const check = await validateKey('sk-test-123', { skipNetwork: true });
 assert.equal(check.valid, true);
+assert.deepEqual(check.models, ['gpt-4.1', 'gpt-4.1-mini']);
 
 const fakeDir = tempDir('codex');
 const { codexPath, capturePath } = writeFakeCodex(fakeDir);

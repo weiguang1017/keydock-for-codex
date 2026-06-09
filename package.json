@@ -1,6 +1,6 @@
 {
   "name": "keydock-for-codex",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A desktop key dock for checking and switching Codex API keys.",
   "main": "electron/main.mjs",
   "author": {
@@ -30,11 +30,13 @@
     "afterPack": "scripts/clean-appledouble.cjs",
     "files": [
       "electron/**/*",
+      "Resources/icons/**/*",
       "!**/._*",
       "package.json"
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
+      "icon": "electron/assets/icon.icns",
       "target": [
         "dmg",
         "zip"
@@ -42,6 +44,7 @@
       "identity": null
     },
     "win": {
+      "icon": "electron/assets/icon.ico",
       "target": [
         "nsis",
         "zip"
@@ -49,6 +52,7 @@
     },
     "linux": {
       "category": "Development",
+      "icon": "electron/assets/icon.png",
       "maintainer": "Keydock contributors <keydock@example.com>",
       "target": [
         "AppImage",

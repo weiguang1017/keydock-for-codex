@@ -36,13 +36,18 @@ function serializeError(error) {
 
 ipcMain.handle('keys:list', async () => store.list());
 
-ipcMain.handle('keys:add', async (_event, { label, apiKey }) => {
-  const check = await validateKey(apiKey);
+ipcMain.handle('keys:add', async (_event, { label, baseUrl, apiKey }) => {
+  const check = await validateKey(apiKey, { baseUrl });
   if (!check.valid) throw new Error(check.message);
-  return store.add(label, apiKey);
+  return store.add(label, baseUrl, apiKey, check);
 });
 
 ipcMain.handle('keys:updateName', async (_event, { id, label }) => store.updateName(id, label));
+
+ipcMain.handle('keys:updateMetadata', async (_event, { id, label, baseUrl, model }) => {
+  const record = store.updateMetadata(id, { label, baseUrl, model });
+  return record;
+});
 
 ipcMain.handle('keys:delete', async (_event, { id }) => {
   store.remove(id);
@@ -51,15 +56,18 @@ ipcMain.handle('keys:delete', async (_event, { id }) => {
 
 ipcMain.handle('keys:validate', async (_event, { id }) => {
   const apiKey = store.secret(id);
-  const check = await validateKey(apiKey);
-  if (check.valid) store.markValidated(id);
+  const record = store.list().find((item) => item.id === id);
+  const check = await validateKey(apiKey, { baseUrl: record?.baseUrl });
+  store.markValidation(id, check);
   return check;
 });
 
 ipcMain.handle('keys:switch', async (_event, { id }) => {
   const apiKey = store.secret(id);
-  const check = await validateKey(apiKey);
+  const record = store.list().find((item) => item.id === id);
+  const check = await validateKey(apiKey, { baseUrl: record?.baseUrl });
   if (!check.valid) throw new Error(check.message);
+  store.markValidation(id, check);
   const codexPath = await findCodexPath();
   const status = await loginWithCodex(apiKey, codexPath);
   await restartCodexDesktop(codexPath);

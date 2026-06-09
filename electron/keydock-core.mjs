@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
+import http from 'node:http';
 import https from 'node:https';
 import { randomUUID } from 'node:crypto';
 
@@ -18,6 +19,40 @@ export function maskKey(key) {
   if (value.length <= 8) return '***';
   if (value.length <= 14) return `${value.slice(0, 3)}...${value.slice(-3)}`;
   return `${value.slice(0, 7)}...${value.slice(-4)}`;
+}
+
+export function normalizeBaseUrl(value) {
+  const input = trim(value);
+  if (!input) return '';
+  const withProtocol = /^[a-z][a-z\d+\-.]*:\/\//i.test(input) ? input : `https://${input}`;
+  const url = new URL(withProtocol);
+  url.hash = '';
+  return url.toString().replace(/\/$/, '');
+}
+
+export function modelEndpoint(baseUrl) {
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (!normalized) throw new Error('Base URL is required.');
+  const url = new URL(normalized);
+  if (!url.pathname.endsWith('/models')) {
+    url.pathname = `${url.pathname.replace(/\/$/, '')}/models`;
+  }
+  return url;
+}
+
+export function extractModels(payload) {
+  if (!payload || typeof payload !== 'object') return [];
+  const items = Array.isArray(payload.data) ? payload.data : Array.isArray(payload.models) ? payload.models : [];
+  return items
+    .map((item) => {
+      if (typeof item === 'string') return item;
+      if (item && typeof item.id === 'string') return item.id;
+      if (item && typeof item.name === 'string') return item.name;
+      return '';
+    })
+    .map(trim)
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right));
 }
 
 export function nowIso() {
@@ -90,14 +125,22 @@ export class KeydockStore {
     return null;
   }
 
-  add(label, apiKey) {
+  add(label, baseUrl, apiKey, validation = {}) {
     const records = this.list();
     const id = randomUUID();
     const timestamp = nowIso();
+    const models = Array.isArray(validation.models) ? validation.models : [];
+    const selectedModel = trim(validation.model) || models[0] || '';
     const record = {
       id,
-      label: trim(label) || 'OpenAI key',
+      label: trim(label) || 'Untitled key',
+      baseUrl: normalizeBaseUrl(baseUrl || 'https://api.openai.com/v1'),
       maskedKey: maskKey(apiKey),
+      model: selectedModel,
+      models,
+      available: validation.valid === true,
+      statusCode: Number.isFinite(validation.statusCode) ? validation.statusCode : 0,
+      validationMessage: trim(validation.message),
       active: false,
       lastValidatedAt: timestamp,
       createdAt: timestamp,
@@ -111,14 +154,34 @@ export class KeydockStore {
     return record;
   }
 
-  updateName(id, label) {
+  updateMetadata(id, updates = {}) {
     const records = this.list();
     const record = records.find((item) => item.id === id);
     if (!record) throw new Error('Key not found.');
-    record.label = trim(label) || 'Untitled key';
+    if ('label' in updates) record.label = trim(updates.label) || 'Untitled key';
+    if ('baseUrl' in updates) {
+      const nextBaseUrl = normalizeBaseUrl(updates.baseUrl || record.baseUrl || 'https://api.openai.com/v1');
+      if (nextBaseUrl !== record.baseUrl) {
+        record.available = false;
+        record.models = [];
+        record.model = '';
+        record.validationMessage = 'Base URL changed. Check the key again.';
+      }
+      record.baseUrl = nextBaseUrl;
+    }
+    if ('model' in updates) record.model = trim(updates.model);
+    if (Array.isArray(updates.models)) record.models = updates.models;
+    if ('available' in updates) record.available = updates.available === true;
+    if ('statusCode' in updates) record.statusCode = Number.isFinite(updates.statusCode) ? updates.statusCode : 0;
+    if ('validationMessage' in updates) record.validationMessage = trim(updates.validationMessage);
+    if ('lastValidatedAt' in updates) record.lastValidatedAt = updates.lastValidatedAt;
     record.updatedAt = nowIso();
     this.saveList(records);
     return record;
+  }
+
+  updateName(id, label) {
+    return this.updateMetadata(id, { label });
   }
 
   remove(id) {
@@ -140,10 +203,22 @@ export class KeydockStore {
     const records = this.list();
     const record = records.find((item) => item.id === id);
     if (!record) throw new Error('Key not found.');
+    record.available = true;
     record.lastValidatedAt = nowIso();
     record.updatedAt = nowIso();
     this.saveList(records);
     return record;
+  }
+
+  markValidation(id, result) {
+    return this.updateMetadata(id, {
+      available: result.valid === true,
+      statusCode: result.statusCode || 0,
+      validationMessage: result.message || '',
+      models: result.models || [],
+      model: result.model || (result.models || [])[0] || '',
+      lastValidatedAt: nowIso()
+    });
   }
 
   markActive(id) {
@@ -161,20 +236,33 @@ export class KeydockStore {
 
 export function validateKey(apiKey, options = {}) {
   const key = trim(apiKey);
-  if (!key.startsWith('sk-')) {
-    return Promise.resolve({ valid: false, statusCode: 0, message: 'The key must start with sk-.' });
+  if (!key) {
+    return Promise.resolve({ valid: false, statusCode: 0, message: 'API key is required.', models: [] });
+  }
+  let validationUrl;
+  try {
+    validationUrl = options.url || process.env.CKM_VALIDATION_URL
+      ? new URL(options.url || process.env.CKM_VALIDATION_URL)
+      : modelEndpoint(options.baseUrl || process.env.CKM_BASE_URL || 'https://api.openai.com/v1');
+  } catch (error) {
+    return Promise.resolve({ valid: false, statusCode: 0, message: error.message || 'Base URL is invalid.', models: [] });
   }
   if (options.skipNetwork || process.env.CKM_SKIP_NETWORK_VALIDATION_FOR_TESTS === '1') {
-    return Promise.resolve({ valid: true, statusCode: 200, message: 'Test validation passed.' });
+    return Promise.resolve({
+      valid: true,
+      statusCode: 200,
+      message: 'Test validation passed.',
+      models: Array.isArray(options.models) ? options.models : ['gpt-4.1', 'gpt-4.1-mini']
+    });
   }
 
-  const validationUrl = new URL(options.url || process.env.CKM_VALIDATION_URL || 'https://api.openai.com/v1/models');
   return new Promise((resolve) => {
-    const request = https.request({
+    const transport = validationUrl.protocol === 'http:' ? http : https;
+    const request = transport.request({
       method: 'GET',
       protocol: validationUrl.protocol,
       hostname: validationUrl.hostname,
-      port: validationUrl.port || 443,
+      port: validationUrl.port || (validationUrl.protocol === 'http:' ? 80 : 443),
       path: `${validationUrl.pathname}${validationUrl.search}`,
       timeout: 20000,
       headers: {
@@ -182,16 +270,26 @@ export function validateKey(apiKey, options = {}) {
         Accept: 'application/json'
       }
     }, (response) => {
-      response.resume();
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
       response.on('end', () => {
+        let models = [];
+        const body = Buffer.concat(chunks).toString('utf8');
+        if (body) {
+          try {
+            models = extractModels(JSON.parse(body));
+          } catch {
+            models = [];
+          }
+        }
         if (response.statusCode === 200) {
-          resolve({ valid: true, statusCode: 200, message: 'OpenAI accepted this key.' });
+          resolve({ valid: true, statusCode: 200, message: 'The platform accepted this key.', models });
         } else if (response.statusCode === 401) {
-          resolve({ valid: false, statusCode: 401, message: 'OpenAI rejected this key.' });
+          resolve({ valid: false, statusCode: 401, message: 'The platform rejected this key.', models });
         } else if (response.statusCode === 403) {
-          resolve({ valid: false, statusCode: 403, message: 'This key is not permitted to access the validation endpoint.' });
+          resolve({ valid: false, statusCode: 403, message: 'This key is not permitted to access the model endpoint.', models });
         } else {
-          resolve({ valid: false, statusCode: response.statusCode || 0, message: `Validation failed with HTTP ${response.statusCode || 0}.` });
+          resolve({ valid: false, statusCode: response.statusCode || 0, message: `Validation failed with HTTP ${response.statusCode || 0}.`, models });
         }
       });
     });

@@ -17,6 +17,7 @@ app:
 	mkdir -p "$(MACOS_DIR)" "$(RESOURCES_DIR)"
 	$(CC) $(CFLAGS) src/main.m -o "$(MACOS_DIR)/$(EXECUTABLE)" $(FRAMEWORKS)
 	cp Resources/Info.plist "$(CONTENTS_DIR)/Info.plist"
+	cp Resources/icons/Keydock.icns "$(RESOURCES_DIR)/Keydock.icns"
 	chmod +x "$(MACOS_DIR)/$(EXECUTABLE)"
 	@echo "Built $(APP_DIR)"
 

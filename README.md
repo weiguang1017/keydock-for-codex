@@ -16,7 +16,9 @@ Keydock for Codex 是一款桌面端 Codex API Key 管理器，解决多账号�
 ### 主要功能
 
 - 管理多个 Codex API Key。
+- v1.0.1 支持英文、中文、日文界面，会自动匹配系统语言，也可以手动切换。
 - 新增 Key 时先校验，失败不保存。
+- 新增 Key 需要填写名称、Base URL、API Key，并在校验后显示平台返回的模型列表和可用状态。
 - 一键切换当前 Key，并通过 `codex login --with-api-key` 生效。
 - macOS 原生版使用 Keychain；跨平台 Electron 版使用系统安全存储能力。
 - GitHub Actions 自动构建 macOS、Windows、Linux 应用压缩包。
@@ -64,7 +66,9 @@ Keydock for Codex is a desktop API key manager for Codex. It helps users who wor
 ### Features
 
 - Manage multiple Codex API keys.
+- v1.0.1 supports English, Chinese, and Japanese UI text with automatic system-language matching and a manual selector.
 - Validate a key before saving it.
+- Adding a key now requires name, base URL, and API key, then shows the platform-provided models and availability status after validation.
 - Switch the active key via `codex login --with-api-key`.
 - Native macOS version stores secrets in Keychain; Electron version uses OS-backed secure storage when available.
 - GitHub Actions builds macOS, Windows, and Linux app archives automatically.

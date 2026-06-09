@@ -13,46 +13,98 @@
           <div class="mark">K</div>
           <div>
             <h1>Keydock</h1>
-            <p>for Codex</p>
+            <p data-i18n="appSubtitle">for Codex</p>
           </div>
         </div>
-        <button id="addButton" class="icon-button" title="Add API key">+</button>
+        <button id="addButton" class="icon-button" data-i18n-title="addApiKey" title="Add API key">+</button>
+        <label class="search-box">
+          <span data-i18n="searchKeys">Search keys</span>
+          <input id="searchField" type="search" data-i18n-placeholder="searchPlaceholder" placeholder="Search name, URL, model">
+        </label>
         <div id="keyList" class="key-list"></div>
       </aside>
 
       <section class="detail">
         <header class="detail-header">
           <div>
-            <p class="eyebrow">Active key station</p>
+            <p class="eyebrow" data-i18n="activeStation">Active key station</p>
             <h2 id="detailTitle">No key selected</h2>
           </div>
-          <div id="diag" class="diag">Checking Codex CLI...</div>
+          <div class="header-tools">
+            <label class="language-picker">
+              <span data-i18n="language">Language</span>
+              <select id="languageSelect">
+                <option value="auto" data-i18n="languageAuto">Auto</option>
+                <option value="en" data-i18n="languageEnglish">English</option>
+                <option value="zh" data-i18n="languageChinese">中文</option>
+                <option value="ja" data-i18n="languageJapanese">日本語</option>
+              </select>
+            </label>
+            <div id="diag" class="diag">Checking Codex CLI...</div>
+          </div>
         </header>
+
+        <div class="status-strip">
+          <div>
+            <span data-i18n="status">Status</span>
+            <strong id="statusSummary">-</strong>
+          </div>
+          <div>
+            <span data-i18n="baseUrl">Base URL</span>
+            <code id="baseUrlSummary">-</code>
+          </div>
+          <div>
+            <span data-i18n="model">Model</span>
+            <code id="modelSummary">-</code>
+          </div>
+        </div>
 
         <div class="fields">
           <label>
-            <span>Name</span>
+            <span data-i18n="name">Name</span>
             <input id="nameField" type="text" autocomplete="off">
           </label>
           <label>
-            <span>Masked key</span>
-            <input id="maskedField" type="text" readonly>
+            <span data-i18n="baseUrl">Base URL</span>
+            <span class="field-row">
+              <input id="baseUrlField" type="url" autocomplete="off">
+              <button id="copyBaseUrlButton" type="button" class="tool-button" data-i18n-title="copyBaseUrl" title="Copy Base URL">⧉</button>
+            </span>
           </label>
           <label>
-            <span>Status</span>
+            <span data-i18n="maskedKey">Masked key</span>
+            <span class="field-row">
+              <input id="maskedField" type="text" readonly>
+              <button id="copyMaskedButton" type="button" class="tool-button" data-i18n-title="copyMaskedKey" title="Copy masked key">⧉</button>
+            </span>
+          </label>
+          <label>
+            <span data-i18n="model">Model</span>
+            <select id="modelField"></select>
+          </label>
+          <label>
+            <span data-i18n="status">Status</span>
             <input id="statusField" type="text" readonly>
           </label>
           <label>
-            <span>Last checked</span>
+            <span data-i18n="lastChecked">Last checked</span>
             <input id="checkedField" type="text" readonly>
           </label>
         </div>
 
+        <section class="model-section" aria-live="polite">
+          <div class="section-header">
+            <div class="section-label" data-i18n="models">Models</div>
+            <button id="copyModelsButton" type="button" class="link-button" data-i18n="copyModels">Copy models</button>
+          </div>
+          <div id="modelList" class="model-list muted-box">No models reported yet</div>
+        </section>
+
         <div class="actions">
-          <button id="saveNameButton">Save name</button>
-          <button id="checkButton">Check key</button>
-          <button id="switchButton" class="primary">Switch & restart</button>
-          <button id="deleteButton" class="danger">Delete</button>
+          <button id="saveDetailsButton" data-i18n="saveDetails">Save details</button>
+          <button id="checkButton" data-i18n="checkKey">Check key</button>
+          <button id="switchButton" class="primary" data-i18n="switchRestart">Switch & restart</button>
+          <button id="deleteButton" class="danger" data-i18n="delete">Delete</button>
         </div>
 
         <footer>
@@ -64,18 +116,24 @@
 
     <dialog id="addDialog">
       <form method="dialog">
-        <h3>Add API key</h3>
+        <h3 data-i18n="addApiKey">Add API key</h3>
+        <p class="dialog-note" data-i18n="keyWillBeChecked">The key will be checked before it is saved.</p>
         <label>
-          <span>Name</span>
-          <input id="newName" type="text" value="OpenAI key">
+          <span data-i18n="name">Name</span>
+          <input id="newName" type="text" value="OpenAI" required>
         </label>
         <label>
-          <span>API key</span>
-          <input id="newKey" type="password" autocomplete="off">
+          <span data-i18n="baseUrl">Base URL</span>
+          <input id="newBaseUrl" type="url" value="https://api.openai.com/v1" required>
         </label>
+        <label>
+          <span data-i18n="apiKey">API key</span>
+          <input id="newKey" type="password" autocomplete="off" required>
+        </label>
+        <div id="newModelStatus" class="muted-box">Validate to load models</div>
         <menu>
-          <button value="cancel">Cancel</button>
-          <button id="confirmAdd" value="default" class="primary">Add</button>
+          <button value="cancel" data-i18n="cancel">Cancel</button>
+          <button id="confirmAdd" value="default" class="primary" data-i18n="add">Add</button>
         </menu>
       </form>
     </dialog>
