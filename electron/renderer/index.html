@@ -21,6 +21,10 @@
           <span data-i18n="searchKeys">Search keys</span>
           <input id="searchField" type="search" data-i18n-placeholder="searchPlaceholder" placeholder="Search name, URL, model">
         </label>
+        <div id="emptyState" class="empty-state hidden">
+          <strong data-i18n="emptyTitle">Add your first key</strong>
+          <p id="emptyHint" data-i18n="emptyHint">No saved keys were found. Add one to start switching quickly.</p>
+        </div>
         <div id="keyList" class="key-list"></div>
       </aside>
 
@@ -130,10 +134,13 @@
           <span data-i18n="apiKey">API key</span>
           <input id="newKey" type="password" autocomplete="off" required>
         </label>
-        <div id="newModelStatus" class="muted-box">Validate to load models</div>
+        <div class="dialog-actions">
+          <button id="validateNewButton" type="button" data-i18n="validateLoadModels">Validate & load models</button>
+          <div id="newModelStatus" class="muted-box">Validate to load models</div>
+        </div>
         <menu>
-          <button value="cancel" data-i18n="cancel">Cancel</button>
-          <button id="confirmAdd" value="default" class="primary" data-i18n="add">Add</button>
+          <button id="cancelAdd" type="button" value="cancel" data-i18n="cancel">Cancel</button>
+          <button id="confirmAdd" type="submit" value="default" class="primary" data-i18n="add">Add</button>
         </menu>
       </form>
     </dialog>

@@ -416,6 +416,21 @@ export async function loginWithCodex(apiKey, codexPath) {
   return trim(status.stdout);
 }
 
+export async function readCodexLogin(codexPath) {
+  const status = await runCommand(codexPath, ['login', 'status'], { timeoutMs: 15000 });
+  if (status.status !== 0) {
+    throw new Error(trim(status.stderr) || 'codex login status failed.');
+  }
+  return trim(status.stdout);
+}
+
+export function extractMaskedKeyFromStatus(statusOutput) {
+  const text = trim(statusOutput);
+  if (!text) return '';
+  const masked = text.match(/sk-[A-Za-z0-9*._-]+/);
+  return masked ? masked[0] : '';
+}
+
 export async function restartCodexDesktop(codexPath) {
   if (process.env.CKM_DISABLE_RESTART === '1') return;
   if (process.platform === 'darwin') {

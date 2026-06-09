@@ -3,9 +3,11 @@ import { fileURLToPath } from 'node:url';
 import { app, BrowserWindow, ipcMain, safeStorage } from 'electron';
 import {
   APP_NAME,
+  extractMaskedKeyFromStatus,
   KeydockStore,
   findCodexPath,
   loginWithCodex,
+  readCodexLogin,
   restartCodexDesktop,
   validateKey
 } from './keydock-core.mjs';
@@ -77,8 +79,23 @@ ipcMain.handle('keys:switch', async (_event, { id }) => {
 
 ipcMain.handle('app:diagnostics', async () => {
   try {
+    const codexPath = await findCodexPath();
+    let currentKey = null;
+    try {
+      const status = await readCodexLogin(codexPath);
+      const maskedKey = extractMaskedKeyFromStatus(status);
+      if (maskedKey) {
+        currentKey = {
+          status,
+          maskedKey
+        };
+      }
+    } catch {
+      currentKey = null;
+    }
     return {
-      codexPath: await findCodexPath(),
+      codexPath,
+      currentKey,
       encryption: safeStorage.isEncryptionAvailable() ? 'OS secure storage' : 'local fallback'
     };
   } catch (error) {

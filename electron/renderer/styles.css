@@ -107,6 +107,26 @@ label span,
   margin-bottom: 12px;
 }
 
+.empty-state {
+  display: grid;
+  gap: 6px;
+  margin: 4px 0 12px;
+  padding: 12px;
+  border: 1px dashed #34415d;
+  border-radius: 8px;
+  background: rgba(20, 28, 44, 0.58);
+}
+
+.empty-state strong {
+  font-size: 13px;
+}
+
+.empty-state p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .search-box span,
 label span {
   font-size: 11px;
@@ -473,6 +493,11 @@ dialog form {
 .dialog-note {
   color: var(--muted);
   font-size: 13px;
+}
+
+.dialog-actions {
+  display: grid;
+  gap: 10px;
 }
 
 menu {
