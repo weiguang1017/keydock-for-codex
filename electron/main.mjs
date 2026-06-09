@@ -7,6 +7,8 @@ import {
   KeydockStore,
   findCodexPath,
   loginWithCodex,
+  publicCodexProfile,
+  readCodexProfile,
   readCodexLogin,
   restartCodexDesktop,
   validateKey
@@ -36,11 +38,36 @@ function serializeError(error) {
   return { message: error?.message || 'Unknown error' };
 }
 
-ipcMain.handle('keys:list', async () => store.list());
+async function syncCodexProfile() {
+  const profile = readCodexProfile();
+  if (profile.configured) {
+    store.upsertCodexProfile(profile);
+  }
+  return profile;
+}
 
-ipcMain.handle('keys:add', async (_event, { label, baseUrl, apiKey }) => {
-  const check = await validateKey(apiKey, { baseUrl });
+ipcMain.handle('keys:list', async () => {
+  try {
+    await syncCodexProfile();
+  } catch {
+    // Listing locally saved keys should still work if Codex config is unreadable.
+  }
+  return store.list();
+});
+
+ipcMain.handle('keys:testDraft', async (_event, { baseUrl, apiKey }) => validateKey(apiKey, { baseUrl }));
+
+ipcMain.handle('keys:add', async (_event, { label, baseUrl, apiKey, model, validation }) => {
+  const check = validation?.valid === true
+    ? {
+        valid: true,
+        statusCode: Number.isFinite(validation.statusCode) ? validation.statusCode : 200,
+        message: validation.message || 'The platform accepted this key.',
+        models: Array.isArray(validation.models) ? validation.models : []
+      }
+    : await validateKey(apiKey, { baseUrl });
   if (!check.valid) throw new Error(check.message);
+  if (model) check.model = model;
   return store.add(label, baseUrl, apiKey, check);
 });
 
@@ -78,7 +105,10 @@ ipcMain.handle('keys:switch', async (_event, { id }) => {
 });
 
 ipcMain.handle('app:diagnostics', async () => {
+  const codexProfile = syncCodexProfile()
+    .catch((error) => ({ configured: false, message: error.message }));
   try {
+    const profile = await codexProfile;
     const codexPath = await findCodexPath();
     let currentKey = null;
     try {
@@ -96,11 +126,14 @@ ipcMain.handle('app:diagnostics', async () => {
     return {
       codexPath,
       currentKey,
+      codexProfile: publicCodexProfile(profile),
       encryption: safeStorage.isEncryptionAvailable() ? 'OS secure storage' : 'local fallback'
     };
   } catch (error) {
+    const profile = await codexProfile;
     return {
       ...serializeError(error),
+      codexProfile: publicCodexProfile(profile),
       encryption: safeStorage.isEncryptionAvailable() ? 'OS secure storage' : 'local fallback'
     };
   }

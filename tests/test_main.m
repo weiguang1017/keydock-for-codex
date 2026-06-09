@@ -84,6 +84,7 @@ static void testCodexCliDetectionAndStdin(void) {
     NSString *capture = [directory stringByAppendingPathComponent:@"capture.txt"];
     writeFakeCodex(fakeCodex, capture);
 
+    setenv("CKM_CODEX_PATH", fakeCodex.UTF8String, 1);
     NSString *oldPath = NSProcessInfo.processInfo.environment[@"PATH"] ?: @"";
     NSString *newPath = [NSString stringWithFormat:@"%@:%@", directory, oldPath];
     setenv("PATH", newPath.UTF8String, 1);

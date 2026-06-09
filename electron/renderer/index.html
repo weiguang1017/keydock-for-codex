@@ -24,6 +24,7 @@
         <div id="emptyState" class="empty-state hidden">
           <strong data-i18n="emptyTitle">Add your first key</strong>
           <p id="emptyHint" data-i18n="emptyHint">No saved keys were found. Add one to start switching quickly.</p>
+          <button id="emptyAddButton" type="button" data-i18n="addApiKey">Add API key</button>
         </div>
         <div id="keyList" class="key-list"></div>
       </aside>
@@ -63,7 +64,13 @@
           </div>
         </div>
 
-        <div class="fields">
+        <section id="detailEmpty" class="detail-empty hidden">
+          <strong data-i18n="emptyTitle">Add your first key</strong>
+          <p data-i18n="codexNeedsSetup">No configured Codex key found. Add an API key below to start.</p>
+          <button id="detailAddButton" type="button" class="primary" data-i18n="addApiKey">Add API key</button>
+        </section>
+
+        <div id="detailFields" class="fields">
           <label>
             <span data-i18n="name">Name</span>
             <input id="nameField" type="text" autocomplete="off">
@@ -96,7 +103,7 @@
           </label>
         </div>
 
-        <section class="model-section" aria-live="polite">
+        <section id="modelSection" class="model-section" aria-live="polite">
           <div class="section-header">
             <div class="section-label" data-i18n="models">Models</div>
             <button id="copyModelsButton" type="button" class="link-button" data-i18n="copyModels">Copy models</button>
@@ -104,7 +111,7 @@
           <div id="modelList" class="model-list muted-box">No models reported yet</div>
         </section>
 
-        <div class="actions">
+        <div id="detailActions" class="actions">
           <button id="saveDetailsButton" data-i18n="saveDetails">Save details</button>
           <button id="checkButton" data-i18n="checkKey">Check key</button>
           <button id="switchButton" class="primary" data-i18n="switchRestart">Switch & restart</button>
@@ -136,11 +143,12 @@
         </label>
         <div class="dialog-actions">
           <button id="validateNewButton" type="button" data-i18n="validateLoadModels">Validate & load models</button>
+          <select id="newModelField" aria-label="Model"></select>
           <div id="newModelStatus" class="muted-box">Validate to load models</div>
         </div>
         <menu>
           <button id="cancelAdd" type="button" value="cancel" data-i18n="cancel">Cancel</button>
-          <button id="confirmAdd" type="submit" value="default" class="primary" data-i18n="add">Add</button>
+          <button id="confirmAdd" type="submit" value="default" class="primary" data-i18n="add" disabled>Add</button>
         </menu>
       </form>
     </dialog>

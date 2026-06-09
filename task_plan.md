@@ -16,6 +16,7 @@ Implement v1.0.1 optimizations for the client:
 | 4. Verify behavior | complete | Electron and native tests passed; browser preview was blocked by local browser policy. |
 | 5. Redesign app icon | complete | Replaced orbit concept with Codex-derived blue command cloud plus Keydock key mark. |
 | 6. Optimize UI for programmers | complete | Added search, copy actions, compact status strip, dark tool UI, and keyboard-friendly operations. |
+| 7. Fix Codex config detection and add-key flow | complete | Reads `~/.codex` config/auth, guides unconfigured users, and makes Test load models before Add saves. |
 
 ## Decisions
 - Treat user-facing text as localizable.

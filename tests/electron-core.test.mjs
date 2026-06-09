@@ -12,6 +12,8 @@ import {
   maskKey,
   modelEndpoint,
   normalizeBaseUrl,
+  parseCodexConfig,
+  readCodexProfile,
   validateKey
 } from '../electron/keydock-core.mjs';
 
@@ -52,6 +54,10 @@ assert.equal(apiKeyStdin('  sk-test-newline  ', 'win32'), 'sk-test-newline\r\n')
 assert.equal(normalizeBaseUrl('api.example.com/v1/'), 'https://api.example.com/v1');
 assert.equal(modelEndpoint('https://api.example.com/v1').toString(), 'https://api.example.com/v1/models');
 assert.deepEqual(extractModels({ data: [{ id: 'gpt-z' }, { id: 'gpt-a' }] }), ['gpt-a', 'gpt-z']);
+const codexConfig = parseCodexConfig('model_provider = "OpenAI"\nmodel = "gpt-5.5"\n[model_providers.OpenAI]\nbase_url = "https://cursorvip.com"\n');
+assert.equal(codexConfig.root.model_provider, 'OpenAI');
+assert.equal(codexConfig.root.model, 'gpt-5.5');
+assert.equal(codexConfig.providers.OpenAI.base_url, 'https://cursorvip.com');
 
 const winInvocation = commandInvocation('C:\\Tools\\codex.cmd', ['login', '--with-api-key'], 'win32', 'C:\\Windows\\System32\\cmd.exe');
 assert.equal(winInvocation.command, 'C:\\Windows\\System32\\cmd.exe');
@@ -75,6 +81,21 @@ assert.deepEqual(record.models, ['gpt-a', 'gpt-b']);
 const metadata = fs.readFileSync(path.join(storeDir, 'keys.json'), 'utf8');
 assert.equal(metadata.includes('sk-test-1234567890'), false);
 
+const codexHome = tempDir('codex-home');
+fs.writeFileSync(path.join(codexHome, 'config.toml'), 'model_provider = "OpenAI"\nmodel = "gpt-5.5"\n[model_providers.OpenAI]\nbase_url = "https://cursorvip.com"\n');
+fs.writeFileSync(path.join(codexHome, 'auth.json'), JSON.stringify({ OPENAI_API_KEY: 'sk-codex-home-1234567890' }));
+fs.writeFileSync(path.join(codexHome, 'models_cache.json'), JSON.stringify({ models: [{ slug: 'gpt-5.5' }, { slug: 'gpt-4.1' }] }));
+const profile = readCodexProfile(codexHome);
+assert.equal(profile.configured, true);
+assert.equal(profile.baseUrl, 'https://cursorvip.com');
+assert.equal(profile.model, 'gpt-5.5');
+assert.equal(profile.maskedKey, 'sk-code...7890');
+assert.deepEqual(profile.models.slice(0, 2), ['gpt-5.5', 'gpt-4.1']);
+const imported = store.upsertCodexProfile(profile);
+assert.equal(imported.active, true);
+assert.equal(store.secret(imported.id), 'sk-codex-home-1234567890');
+assert.equal(store.list().filter((item) => item.source === 'codex-config').length, 1);
+
 const check = await validateKey('sk-test-123', { skipNetwork: true });
 assert.equal(check.valid, true);
 assert.deepEqual(check.models, ['gpt-4.1', 'gpt-4.1-mini']);
@@ -82,6 +103,7 @@ assert.deepEqual(check.models, ['gpt-4.1', 'gpt-4.1-mini']);
 const fakeDir = tempDir('codex');
 const { codexPath, capturePath } = writeFakeCodex(fakeDir);
 prependToPath(fakeDir);
+process.env.CKM_CODEX_PATH = codexPath;
 const found = await findCodexPath();
 assert.equal(fs.existsSync(found), true);
 assert.equal(path.basename(found).toLowerCase(), path.basename(codexPath).toLowerCase());

@@ -547,6 +547,11 @@ static NSURL *CKMApplicationSupportDirectory(void) {
 @implementation CKMCodexService
 
 + (NSString *)findCodexPath:(NSError **)error {
+    NSString *explicitPath = NSProcessInfo.processInfo.environment[@"CKM_CODEX_PATH"];
+    if (explicitPath.length > 0 && [NSFileManager.defaultManager isExecutableFileAtPath:explicitPath]) {
+        return explicitPath;
+    }
+
     NSString *shell = NSProcessInfo.processInfo.environment[@"SHELL"];
     if (shell.length == 0 || ![NSFileManager.defaultManager isExecutableFileAtPath:shell]) {
         shell = @"/bin/zsh";

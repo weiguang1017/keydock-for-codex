@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 
 contextBridge.exposeInMainWorld('keydock', {
   listKeys: () => ipcRenderer.invoke('keys:list'),
+  testDraftKey: (payload) => ipcRenderer.invoke('keys:testDraft', payload),
   addKey: (payload) => ipcRenderer.invoke('keys:add', payload),
   updateName: (payload) => ipcRenderer.invoke('keys:updateName', payload),
   updateMetadata: (payload) => ipcRenderer.invoke('keys:updateMetadata', payload),

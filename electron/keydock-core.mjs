@@ -8,6 +8,8 @@ import { randomUUID } from 'node:crypto';
 
 export const APP_NAME = 'Keydock for Codex';
 export const SECRET_SERVICE = 'KeydockForCodex';
+export const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
+export const DEFAULT_CODEX_PROFILE_LABEL = 'Codex CLI';
 
 export function trim(value) {
   return String(value || '').trim();
@@ -59,6 +61,12 @@ export function nowIso() {
   return new Date().toISOString();
 }
 
+function uniqueStrings(values) {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .map(trim)
+    .filter(Boolean))];
+}
+
 export function appDataDir() {
   return path.join(os.homedir(), 'Library', 'Application Support', APP_NAME);
 }
@@ -79,6 +87,244 @@ function readJson(filePath, fallback) {
 function writeJson(filePath, value) {
   ensureDir(path.dirname(filePath));
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+}
+
+function stripTomlComment(line) {
+  let quote = '';
+  let escaped = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote === '"' && char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if ((char === '"' || char === "'") && !quote) {
+      quote = char;
+      continue;
+    }
+    if (char === quote) {
+      quote = '';
+      continue;
+    }
+    if (char === '#' && !quote) return line.slice(0, index);
+  }
+  return line;
+}
+
+function unquoteToml(value) {
+  const input = trim(value);
+  if (input.length < 2) return input;
+  const quote = input[0];
+  if ((quote !== '"' && quote !== "'") || input[input.length - 1] !== quote) return input;
+  const body = input.slice(1, -1);
+  if (quote === "'") return body;
+  return body
+    .replaceAll('\\"', '"')
+    .replaceAll('\\\\', '\\')
+    .replaceAll('\\n', '\n')
+    .replaceAll('\\r', '\r')
+    .replaceAll('\\t', '\t');
+}
+
+function splitTomlPath(value) {
+  const parts = [];
+  let current = '';
+  let quote = '';
+  let escaped = false;
+  for (const char of value) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (quote === '"' && char === '\\') {
+      current += char;
+      escaped = true;
+      continue;
+    }
+    if ((char === '"' || char === "'") && !quote) {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (char === quote) {
+      quote = '';
+      current += char;
+      continue;
+    }
+    if (char === '.' && !quote) {
+      parts.push(unquoteToml(current));
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  if (current) parts.push(unquoteToml(current));
+  return parts.map(trim).filter(Boolean);
+}
+
+function parseTomlValue(rawValue) {
+  const value = trim(rawValue);
+  if (!value) return '';
+  if (value.startsWith('"') || value.startsWith("'")) return unquoteToml(value);
+  if (value.startsWith('[') && value.endsWith(']')) {
+    const body = value.slice(1, -1);
+    return body
+      .split(',')
+      .map((item) => parseTomlValue(item))
+      .filter((item) => item !== '');
+  }
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return value;
+}
+
+export function parseCodexConfig(content) {
+  const root = {};
+  const providers = {};
+  let section = [];
+
+  for (const rawLine of String(content || '').split(/\r?\n/)) {
+    const line = trim(stripTomlComment(rawLine));
+    if (!line) continue;
+    const sectionMatch = line.match(/^\[([^\]]+)]$/);
+    if (sectionMatch) {
+      section = splitTomlPath(sectionMatch[1]);
+      continue;
+    }
+    const separator = line.indexOf('=');
+    if (separator < 1) continue;
+    const key = trim(line.slice(0, separator));
+    const value = parseTomlValue(line.slice(separator + 1));
+    if (section[0] === 'model_providers' && section.length >= 2) {
+      const providerName = section.slice(1).join('.');
+      providers[providerName] = providers[providerName] || {};
+      providers[providerName][key] = value;
+    } else if (section.length === 0) {
+      root[key] = value;
+    }
+  }
+
+  return { root, providers };
+}
+
+function firstString(...values) {
+  return values.find((value) => typeof value === 'string' && trim(value)) || '';
+}
+
+function findApiKeyInAuth(value, keyName = '') {
+  if (typeof value === 'string') {
+    if (/api[_-]?key|openai_api_key/i.test(keyName) || /^sk-[A-Za-z0-9._-]+/.test(value)) {
+      return trim(value);
+    }
+    return '';
+  }
+  if (!value || typeof value !== 'object') return '';
+  for (const [key, child] of Object.entries(value)) {
+    if (/access[_-]?token|refresh[_-]?token|id[_-]?token/i.test(key)) continue;
+    const found = findApiKeyInAuth(child, key);
+    if (found) return found;
+  }
+  return '';
+}
+
+function readCodexModelCache(directory, selectedModel) {
+  const models = [];
+  const cachePath = path.join(directory, 'models_cache.json');
+  try {
+    const cache = readJson(cachePath, {});
+    const items = Array.isArray(cache.models) ? cache.models : [];
+    for (const item of items) {
+      if (typeof item === 'string') models.push(item);
+      if (item && typeof item.slug === 'string') models.push(item.slug);
+      if (item && typeof item.id === 'string') models.push(item.id);
+    }
+  } catch {
+    // The cache is optional; the configured model is enough for startup.
+  }
+  return uniqueStrings([selectedModel, ...models]);
+}
+
+export function readCodexProfile(directory = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')) {
+  const configPath = path.join(directory, 'config.toml');
+  const authPath = path.join(directory, 'auth.json');
+  const profile = {
+    directory,
+    configPath,
+    authPath,
+    hasDirectory: fs.existsSync(directory),
+    hasConfig: fs.existsSync(configPath),
+    hasAuth: fs.existsSync(authPath),
+    configured: false,
+    label: DEFAULT_CODEX_PROFILE_LABEL,
+    providerName: '',
+    baseUrl: DEFAULT_BASE_URL,
+    model: '',
+    models: [],
+    maskedKey: '',
+    message: ''
+  };
+
+  let parsedConfig = { root: {}, providers: {} };
+  if (profile.hasConfig) {
+    try {
+      parsedConfig = parseCodexConfig(fs.readFileSync(configPath, 'utf8'));
+    } catch (error) {
+      profile.message = error.message || 'Unable to read Codex config.toml.';
+    }
+  }
+
+  const providerName = firstString(
+    parsedConfig.root.model_provider,
+    parsedConfig.root.default_model_provider,
+    parsedConfig.root.provider
+  );
+  const provider = parsedConfig.providers[providerName]
+    || parsedConfig.providers.OpenAI
+    || Object.values(parsedConfig.providers)[0]
+    || {};
+  profile.providerName = providerName || firstString(provider.name) || 'OpenAI';
+  profile.label = profile.providerName ? `Codex ${profile.providerName}` : DEFAULT_CODEX_PROFILE_LABEL;
+  profile.baseUrl = firstString(
+    provider.base_url,
+    provider.baseURL,
+    provider.api_base,
+    provider.api_base_url,
+    parsedConfig.root.base_url,
+    parsedConfig.root.api_base,
+    DEFAULT_BASE_URL
+  );
+  profile.model = firstString(parsedConfig.root.model, provider.model, parsedConfig.root.default_model);
+
+  let auth = {};
+  if (profile.hasAuth) {
+    try {
+      auth = readJson(authPath, {});
+    } catch (error) {
+      profile.message = error.message || 'Unable to read Codex auth.json.';
+    }
+  }
+  const apiKey = findApiKeyInAuth(auth);
+  profile.maskedKey = maskKey(apiKey);
+  profile.models = readCodexModelCache(directory, profile.model);
+  profile.configured = Boolean(apiKey);
+  profile.apiKey = apiKey;
+  if (!profile.configured && !profile.message) {
+    if (!profile.hasDirectory) profile.message = 'Codex config directory was not found.';
+    else if (!profile.hasAuth) profile.message = 'Codex auth.json was not found.';
+    else profile.message = 'Codex auth.json does not contain an API key.';
+  }
+  return profile;
+}
+
+export function publicCodexProfile(profile) {
+  if (!profile) return null;
+  const { apiKey: _apiKey, ...safeProfile } = profile;
+  return safeProfile;
 }
 
 export class KeydockStore {
@@ -129,12 +375,12 @@ export class KeydockStore {
     const records = this.list();
     const id = randomUUID();
     const timestamp = nowIso();
-    const models = Array.isArray(validation.models) ? validation.models : [];
+    const models = uniqueStrings(validation.models);
     const selectedModel = trim(validation.model) || models[0] || '';
     const record = {
       id,
       label: trim(label) || 'Untitled key',
-      baseUrl: normalizeBaseUrl(baseUrl || 'https://api.openai.com/v1'),
+      baseUrl: normalizeBaseUrl(baseUrl || DEFAULT_BASE_URL),
       maskedKey: maskKey(apiKey),
       model: selectedModel,
       models,
@@ -154,13 +400,70 @@ export class KeydockStore {
     return record;
   }
 
+  upsertCodexProfile(profile) {
+    if (!profile?.configured || !profile.apiKey) return null;
+    const records = this.list();
+    const secrets = this.secrets();
+    const timestamp = nowIso();
+    const baseUrl = normalizeBaseUrl(profile.baseUrl || DEFAULT_BASE_URL);
+    const models = uniqueStrings(profile.models);
+    const selectedModel = trim(profile.model) || models[0] || '';
+    const maskedKey = maskKey(profile.apiKey);
+    const matchingSecret = records.find((item) => {
+      try {
+        return this.reveal(secrets.secrets[item.id]) === profile.apiKey;
+      } catch {
+        return false;
+      }
+    });
+    let record = matchingSecret
+      || records.find((item) => item.source === 'codex-config')
+      || records.find((item) => item.maskedKey === maskedKey && normalizeBaseUrl(item.baseUrl || DEFAULT_BASE_URL) === baseUrl);
+    if (!record) {
+      record = {
+        id: randomUUID(),
+        label: trim(profile.label) || DEFAULT_CODEX_PROFILE_LABEL,
+        baseUrl,
+        maskedKey,
+        model: selectedModel,
+        models,
+        available: false,
+        statusCode: 0,
+        validationMessage: trim(profile.message) || 'Imported from Codex config.',
+        active: false,
+        source: 'codex-config',
+        lastValidatedAt: '',
+        createdAt: timestamp,
+        updatedAt: timestamp
+      };
+      records.push(record);
+    } else {
+      record.label = record.label || trim(profile.label) || DEFAULT_CODEX_PROFILE_LABEL;
+      record.baseUrl = baseUrl;
+      record.maskedKey = maskedKey;
+      record.model = selectedModel || record.model || '';
+      record.models = uniqueStrings([...models, ...(record.models || [])]);
+      record.validationMessage = trim(profile.message) || record.validationMessage || 'Imported from Codex config.';
+      if (!matchingSecret) record.source = 'codex-config';
+      record.updatedAt = timestamp;
+    }
+    for (const item of records) {
+      item.active = item.id === record.id;
+      if (item.id === record.id) item.updatedAt = timestamp;
+    }
+    secrets.secrets[record.id] = this.protect(profile.apiKey);
+    this.saveSecrets(secrets);
+    this.saveList(records);
+    return record;
+  }
+
   updateMetadata(id, updates = {}) {
     const records = this.list();
     const record = records.find((item) => item.id === id);
     if (!record) throw new Error('Key not found.');
     if ('label' in updates) record.label = trim(updates.label) || 'Untitled key';
     if ('baseUrl' in updates) {
-      const nextBaseUrl = normalizeBaseUrl(updates.baseUrl || record.baseUrl || 'https://api.openai.com/v1');
+      const nextBaseUrl = normalizeBaseUrl(updates.baseUrl || record.baseUrl || DEFAULT_BASE_URL);
       if (nextBaseUrl !== record.baseUrl) {
         record.available = false;
         record.models = [];
@@ -243,7 +546,7 @@ export function validateKey(apiKey, options = {}) {
   try {
     validationUrl = options.url || process.env.CKM_VALIDATION_URL
       ? new URL(options.url || process.env.CKM_VALIDATION_URL)
-      : modelEndpoint(options.baseUrl || process.env.CKM_BASE_URL || 'https://api.openai.com/v1');
+      : modelEndpoint(options.baseUrl || process.env.CKM_BASE_URL || DEFAULT_BASE_URL);
   } catch (error) {
     return Promise.resolve({ valid: false, statusCode: 0, message: error.message || 'Base URL is invalid.', models: [] });
   }

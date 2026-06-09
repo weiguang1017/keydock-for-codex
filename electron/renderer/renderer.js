@@ -2,6 +2,7 @@ let keys = [];
 let selectedId = null;
 let busy = false;
 let filterText = '';
+let draftValidation = null;
 
 const STORAGE_LANGUAGE_KEY = 'keydock.language';
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
@@ -40,6 +41,7 @@ const translations = {
     delete: 'Delete',
     cancel: 'Cancel',
     add: 'Add',
+    test: 'Test',
     never: 'Never',
     unavailable: 'Unavailable',
     available: 'Available',
@@ -47,10 +49,14 @@ const translations = {
     validated: 'Validated',
     notChecked: 'Not checked',
     noModels: 'No models reported yet',
-    keyWillBeChecked: 'The key will be checked before it is saved.',
+    keyWillBeChecked: 'Test the key to load available models, then add it to Keydock.',
     footerMessage: 'Terminal Codex sessions must be reopened after switching.',
     checkingBeforeSave: 'Checking key before saving...',
-    validateLoadModels: 'Validate & load models',
+    testingDraft: 'Testing key...',
+    testPassed: 'Key is valid. Models loaded.',
+    testFailed: 'Key test failed.',
+    testBeforeAdd: 'Test this key before adding it.',
+    validateLoadModels: 'Test',
     savedValidated: 'Key saved and validated.',
     savingDetails: 'Saving details...',
     detailsSaved: 'Details saved.',
@@ -67,6 +73,8 @@ const translations = {
     missingApiKey: 'API key is required.',
     codexCli: 'Codex CLI: {path} · Secrets: {encryption}',
     codexMissing: '{message} · Secrets: {encryption}',
+    codexConfigured: 'Codex config: {maskedKey} · {baseUrl} · {model}',
+    codexNeedsSetup: 'No configured Codex key found. Add an API key below to start.',
     currentConfiguredKey: 'Current Codex key: {maskedKey}',
     noBridge: 'Desktop bridge is unavailable. Restart the app package you built, not the browser preview.',
     modelPlaceholder: 'Validate to load models',
@@ -108,6 +116,7 @@ const translations = {
     delete: '删除',
     cancel: '取消',
     add: '添加',
+    test: '测试',
     never: '从未',
     unavailable: '不可用',
     available: '可用',
@@ -115,10 +124,14 @@ const translations = {
     validated: '已验证',
     notChecked: '未检查',
     noModels: '还没有返回模型',
-    keyWillBeChecked: '保存前会先检查 Key 是否可用。',
+    keyWillBeChecked: '先测试 Key 并加载可用模型，然后再添加到 Keydock。',
     footerMessage: '切换后需要重新打开终端里的 Codex 会话。',
     checkingBeforeSave: '正在检查 Key，检查通过后保存...',
-    validateLoadModels: '验证并加载模型',
+    testingDraft: '正在测试 Key...',
+    testPassed: 'Key 可用，已加载模型。',
+    testFailed: 'Key 测试失败。',
+    testBeforeAdd: '请先测试这个 Key，再添加。',
+    validateLoadModels: '测试',
     savedValidated: 'Key 已保存并验证通过。',
     savingDetails: '正在保存信息...',
     detailsSaved: '信息已保存。',
@@ -135,6 +148,8 @@ const translations = {
     missingApiKey: 'API Key 为必填项。',
     codexCli: 'Codex CLI: {path} · 密钥存储: {encryption}',
     codexMissing: '{message} · 密钥存储: {encryption}',
+    codexConfigured: 'Codex 配置：{maskedKey} · {baseUrl} · {model}',
+    codexNeedsSetup: '没有找到已配置的 Codex Key，请在下方添加 API Key 开始使用。',
     currentConfiguredKey: '当前 Codex Key：{maskedKey}',
     noBridge: '桌面桥接不可用。请启动你构建出的 app，而不是浏览器预览页。',
     modelPlaceholder: '验证后加载模型',
@@ -176,6 +191,7 @@ const translations = {
     delete: '削除',
     cancel: 'キャンセル',
     add: '追加',
+    test: 'テスト',
     never: '未実行',
     unavailable: '利用不可',
     available: '利用可能',
@@ -183,10 +199,14 @@ const translations = {
     validated: '確認済み',
     notChecked: '未確認',
     noModels: 'モデルはまだ取得されていません',
-    keyWillBeChecked: '保存前にキーを確認します。',
+    keyWillBeChecked: 'キーをテストして利用可能なモデルを読み込み、その後 Keydock に追加します。',
     footerMessage: '切替後、ターミナルの Codex セッションは開き直してください。',
     checkingBeforeSave: '保存前にキーを確認しています...',
-    validateLoadModels: '確認してモデルを読み込み',
+    testingDraft: 'キーをテストしています...',
+    testPassed: 'キーは有効です。モデルを読み込みました。',
+    testFailed: 'キーテストに失敗しました。',
+    testBeforeAdd: '追加する前にこのキーをテストしてください。',
+    validateLoadModels: 'テスト',
     savedValidated: 'キーを保存し、確認しました。',
     savingDetails: '詳細を保存しています...',
     detailsSaved: '詳細を保存しました。',
@@ -203,6 +223,8 @@ const translations = {
     missingApiKey: 'APIキーは必須です。',
     codexCli: 'Codex CLI: {path} · シークレット: {encryption}',
     codexMissing: '{message} · シークレット: {encryption}',
+    codexConfigured: 'Codex 設定: {maskedKey} · {baseUrl} · {model}',
+    codexNeedsSetup: '設定済みの Codex キーが見つかりません。下で API キーを追加してください。',
     currentConfiguredKey: '現在の Codex キー: {maskedKey}',
     noBridge: 'デスクトップブリッジが使えません。ブラウザプレビューではなく、ビルドした app を起動してください。',
     modelPlaceholder: '確認後にモデルを読み込み',
@@ -273,6 +295,8 @@ function setBusy(value, message) {
   busy = value;
   $('busy').classList.toggle('hidden', !value);
   if (message) $('message').textContent = message;
+  $('confirmAdd').disabled = value || !draftValidation?.valid;
+  $('validateNewButton').disabled = value;
   renderDetail();
 }
 
@@ -365,6 +389,10 @@ function renderModelList(key) {
 function renderDetail() {
   const key = selectedKey();
   const disabled = !key || busy;
+  $('detailEmpty').classList.toggle('hidden', Boolean(key));
+  $('detailFields').classList.toggle('hidden', !key);
+  $('modelSection').classList.toggle('hidden', !key);
+  $('detailActions').classList.toggle('hidden', !key);
   $('detailTitle').textContent = key ? key.label : t('noKeySelected');
   $('statusSummary').textContent = key ? keyStatus(key) : '-';
   $('baseUrlSummary').textContent = key?.baseUrl || '-';
@@ -440,19 +468,68 @@ async function copyText(value) {
   $('message').textContent = t('copied');
 }
 
-async function validateDraftKey() {
+function draftFingerprint() {
+  return [
+    $('newBaseUrl').value.trim(),
+    $('newKey').value.trim()
+  ].join('\n');
+}
+
+function clearDraftValidation() {
+  draftValidation = null;
+  setModelOptions($('newModelField'), [], '');
+  $('newModelStatus').textContent = t('modelPlaceholder');
+  $('confirmAdd').disabled = true;
+}
+
+function setDraftModels(models, selectedModel = '') {
+  setModelOptions($('newModelField'), models, selectedModel);
+  const normalized = Array.isArray(models) ? models : [];
+  $('newModelStatus').textContent = normalized.length > 0
+    ? normalized.slice(0, 8).join(', ')
+    : t('noModels');
+}
+
+async function testDraftKey() {
   const label = requireValue('newName', 'missingName');
   const baseUrl = requireValue('newBaseUrl', 'missingBaseUrl');
   const apiKey = requireValue('newKey', 'missingApiKey');
   if (!label || !baseUrl || !apiKey) return null;
   if (!requireBridge()) return null;
-  const record = await withAction(t('checkingKey'), () => window.keydock.addKey({ label, baseUrl, apiKey }));
+  const fingerprint = draftFingerprint();
+  const result = await withAction(t('testingDraft'), () => window.keydock.testDraftKey({ baseUrl, apiKey }));
+  if (!result?.valid) {
+    clearDraftValidation();
+    $('message').textContent = result?.message || t('testFailed');
+    return null;
+  }
+  draftValidation = { ...result, fingerprint };
+  setDraftModels(result.models || [], result.model || '');
+  $('confirmAdd').disabled = false;
+  $('message').textContent = t('testPassed');
+  return result;
+}
+
+async function addDraftKey() {
+  const label = requireValue('newName', 'missingName');
+  const baseUrl = requireValue('newBaseUrl', 'missingBaseUrl');
+  const apiKey = requireValue('newKey', 'missingApiKey');
+  if (!label || !baseUrl || !apiKey) return null;
+  if (!draftValidation?.valid || draftValidation.fingerprint !== draftFingerprint()) {
+    $('message').textContent = t('testBeforeAdd');
+    await testDraftKey();
+    if (!draftValidation?.valid || draftValidation.fingerprint !== draftFingerprint()) return null;
+  }
+  if (!requireBridge()) return null;
+  const record = await withAction(t('checkingBeforeSave'), () => window.keydock.addKey({
+    label,
+    baseUrl,
+    apiKey,
+    model: $('newModelField').value,
+    validation: draftValidation
+  }));
   if (!record) return null;
-  $('newModelStatus').textContent = (record.models && record.models.length > 0)
-    ? record.models.slice(0, 6).join(', ')
-    : t('noModels');
   selectedId = record.id;
-  await refresh();
   return record;
 }
 
@@ -460,7 +537,7 @@ function resetAddForm() {
   $('newName').value = 'OpenAI';
   $('newBaseUrl').value = DEFAULT_BASE_URL;
   $('newKey').value = '';
-  $('newModelStatus').textContent = t('modelPlaceholder');
+  clearDraftValidation();
 }
 
 $('languageSelect').addEventListener('change', () => {
@@ -482,6 +559,15 @@ $('searchField').addEventListener('input', () => {
 $('addButton').addEventListener('click', () => {
   resetAddForm();
   $('addDialog').showModal();
+  $('newKey').focus();
+});
+
+$('emptyAddButton').addEventListener('click', () => {
+  $('addButton').click();
+});
+
+$('detailAddButton').addEventListener('click', () => {
+  $('addButton').click();
 });
 
 $('cancelAdd').addEventListener('click', () => {
@@ -489,15 +575,12 @@ $('cancelAdd').addEventListener('click', () => {
 });
 
 $('validateNewButton').addEventListener('click', async () => {
-  const record = await validateDraftKey();
-  if (record) {
-    $('message').textContent = t('keyValid');
-  }
+  await testDraftKey();
 });
 
 $('confirmAdd').addEventListener('click', async (event) => {
   event.preventDefault();
-  const record = await validateDraftKey();
+  const record = await addDraftKey();
   if (record) {
     $('addDialog').close();
     selectedId = record.id;
@@ -505,6 +588,10 @@ $('confirmAdd').addEventListener('click', async (event) => {
     await refresh();
   }
 });
+
+for (const id of ['newBaseUrl', 'newKey']) {
+  $(id).addEventListener('input', clearDraftValidation);
+}
 
 $('saveDetailsButton').addEventListener('click', async () => {
   if (!selectedId) return;
@@ -572,9 +659,21 @@ window.addEventListener('keydown', (event) => {
 async function loadDiagnostics() {
   if (!requireBridge()) return;
   const info = await window.keydock.diagnostics();
-  $('diag').textContent = info.codexPath
-    ? t('codexCli', { path: info.codexPath, encryption: info.encryption })
-    : t('codexMissing', { message: info.message, encryption: info.encryption });
+  if (info.codexProfile?.configured) {
+    $('diag').textContent = t('codexConfigured', {
+      maskedKey: info.codexProfile.maskedKey,
+      baseUrl: info.codexProfile.baseUrl || DEFAULT_BASE_URL,
+      model: info.codexProfile.model || '-'
+    });
+  } else {
+    $('diag').textContent = info.codexPath
+      ? t('codexNeedsSetup')
+      : t('codexMissing', { message: info.codexProfile?.message || info.message, encryption: info.encryption });
+    if (keys.length === 0) {
+      $('emptyHint').textContent = t('codexNeedsSetup');
+      $('message').textContent = t('codexNeedsSetup');
+    }
+  }
   if (info.currentKey?.maskedKey && keys.length === 0) {
     $('emptyHint').textContent = t('currentConfiguredKey', { maskedKey: info.currentKey.maskedKey });
   }
