@@ -1,4 +1,4 @@
-name: Release desktop apps
+name: Release Tauri desktop app
 
 on:
   push:
@@ -15,89 +15,59 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - macos-latest
-          - windows-latest
-          - ubuntu-latest
-
-    env:
-      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
-      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
-      COPYFILE_DISABLE: 1
-      CSC_IDENTITY_AUTO_DISCOVERY: false
-      npm_config_audit: false
-      npm_config_fund: false
+        include:
+          - os: macos-latest
+            bundles: app
+          - os: windows-latest
+            bundles: all
+          - os: ubuntu-latest
+            bundles: all
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Install dependencies
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Test Rust app
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --locked
+
+      - name: Build Tauri bundle
+        run: cargo tauri build --bundles ${{ matrix.bundles }}
+
+      - name: Archive bundle artifacts
+        if: runner.os != 'Windows'
         shell: bash
         run: |
-          for attempt in 1 2 3 4; do
-            echo "Dependency install attempt ${attempt}"
-            if npm install --ignore-scripts --no-audit --no-fund; then
-              exit 0
-            fi
-            rm -rf node_modules
-            sleep $((attempt * 20))
-          done
-          npm install --ignore-scripts --no-audit --no-fund
+          mkdir -p artifacts
+          tar -C src-tauri/target/release/bundle -czf "artifacts/Keydock-for-Codex-${{ runner.os }}.tar.gz" .
 
-      - name: Test
-        run: npm test
-
-      - name: Build macOS universal installers
-        if: runner.os == 'macOS'
-        run: npm run dist -- --mac --universal
-
-      - name: Build installers
-        if: runner.os != 'macOS'
-        run: npm run dist
-
-      - name: Collect release files
-        shell: bash
+      - name: Archive bundle artifacts on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          mkdir -p release-assets
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          Compress-Archive -Path src-tauri\target\release\bundle\* -DestinationPath "artifacts\Keydock-for-Codex-${{ runner.os }}.zip"
 
-          case "$RUNNER_OS" in
-            macOS)
-              dmg="$(find dist -maxdepth 1 -type f -name "*.dmg" | head -n 1)"
-              zip="$(find dist -maxdepth 1 -type f -name "*.zip" | head -n 1)"
-              test -n "$dmg"
-              test -n "$zip"
-              cp "$dmg" "release-assets/Keydock-for-Codex-macOS-universal.dmg"
-              cp "$zip" "release-assets/Keydock-for-Codex-macOS-universal.zip"
-              ;;
-            Windows)
-              exe="$(find dist -maxdepth 1 -type f -name "*.exe" | head -n 1)"
-              zip="$(find dist -maxdepth 1 -type f -name "*.zip" | head -n 1)"
-              test -n "$exe"
-              test -n "$zip"
-              cp "$exe" "release-assets/Keydock-for-Codex-Windows-x64.exe"
-              cp "$zip" "release-assets/Keydock-for-Codex-Windows-x64.zip"
-              ;;
-            Linux)
-              appimage="$(find dist -maxdepth 1 -type f -name "*.AppImage" | head -n 1)"
-              deb="$(find dist -maxdepth 1 -type f -name "*.deb" | head -n 1)"
-              test -n "$appimage"
-              test -n "$deb"
-              cp "$appimage" "release-assets/Keydock-for-Codex-Linux-x64.AppImage"
-              cp "$deb" "release-assets/Keydock-for-Codex-Linux-x64.deb"
-              ;;
-          esac
-
-          find release-assets -maxdepth 1 -type f -print
-
-      - name: Upload build artifacts
+      - name: Upload bundle artifacts
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ runner.os }}
-          path: release-assets/*
+          path: artifacts/*
           if-no-files-found: error
 
   release:
@@ -106,7 +76,8 @@ jobs:
     needs: build
 
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download bundle artifacts
+        uses: actions/download-artifact@v4
         with:
           path: release-assets
           merge-multiple: true
@@ -114,11 +85,9 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: release-assets/*
+          files: release-assets/**
           generate_release_notes: true
           body: |
             Desktop installers for Keydock for Codex.
 
-            - macOS Universal supports both Apple Silicon and Intel Macs.
-            - Windows x64 is for 64-bit Windows.
-            - Linux x64 is available as AppImage and deb.
+            This release is built from the Rust/Tauri app.

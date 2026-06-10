@@ -5,6 +5,32 @@ let draftValidation = null;
 let editingId = null;
 let codexInfo = null;
 
+const tauriInvoke = window.__TAURI__?.core?.invoke || window.__TAURI__?.invoke;
+if (!window.keydock && typeof tauriInvoke === 'function') {
+  window.keydock = {
+    listKeys: () => tauriInvoke('list_keys'),
+    testDraftKey: ({ baseUrl, apiKey }) => tauriInvoke('test_draft_key', { baseUrl, apiKey }),
+    addKey: ({ label, baseUrl, apiKey, model, validation }) => tauriInvoke('add_key', {
+      label,
+      baseUrl,
+      apiKey,
+      model,
+      validation
+    }),
+    updateName: ({ id, label }) => tauriInvoke('update_name', { id, label }),
+    updateMetadata: ({ id, label, baseUrl, model }) => tauriInvoke('update_metadata', {
+      id,
+      label,
+      baseUrl,
+      model
+    }),
+    deleteKey: ({ id }) => tauriInvoke('delete_key', { id }),
+    validateKey: ({ id }) => tauriInvoke('validate_key_cmd', { id }),
+    switchKey: ({ id }) => tauriInvoke('switch_key', { id }),
+    diagnostics: () => tauriInvoke('diagnostics')
+  };
+}
+
 const STORAGE_LANGUAGE_KEY = 'keydock.language';
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const SUPPORTED_LANGUAGES = ['en', 'zh', 'ja'];

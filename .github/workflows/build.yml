@@ -1,4 +1,4 @@
-name: Build desktop apps
+name: Build Tauri desktop app
 
 on:
   push:
@@ -8,118 +8,64 @@ on:
   workflow_dispatch:
 
 jobs:
-  native-macos:
-    name: Native macOS app
-    runs-on: macos-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Test native app
-        run: make test
-      - name: Build native app
-        run: make app
-      - name: Package native app
-        run: ditto -c -k --sequesterRsrc --keepParent "build/Keydock for Codex.app" "Keydock-for-Codex-native-macos.zip"
-      - name: Upload native artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Keydock-for-Codex-native-macos
-          path: Keydock-for-Codex-native-macos.zip
-
-  electron:
-    name: Electron ${{ matrix.os }}
+  tauri:
+    name: Tauri ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    env:
-      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
-      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
-      COPYFILE_DISABLE: 1
-      npm_config_fetch_retries: 5
-      npm_config_fetch_retry_factor: 2
-      npm_config_fetch_retry_mintimeout: 20000
-      npm_config_fetch_retry_maxtimeout: 120000
-      npm_config_audit: false
-      npm_config_fund: false
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - macos-latest
-          - windows-latest
-          - ubuntu-latest
+        include:
+          - os: macos-latest
+            bundles: app
+          - os: windows-latest
+            bundles: all
+          - os: ubuntu-latest
+            bundles: all
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Restore Electron caches
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ github.workspace }}/.cache/electron
-            ${{ github.workspace }}/.cache/electron-builder
-          key: electron-${{ runner.os }}-${{ hashFiles('package.json') }}
-          restore-keys: |
-            electron-${{ runner.os }}-
-      - name: Install dependencies without Electron download
-        shell: bash
-        run: |
-          for attempt in 1 2 3 4; do
-            echo "Dependency install attempt ${attempt}"
-            if npm install --ignore-scripts --no-audit --no-fund; then
-              exit 0
-            fi
-            rm -rf node_modules
-            sleep $((attempt * 20))
-          done
-          npm install --ignore-scripts --no-audit --no-fund
-      - name: Test Electron core
-        run: npm test
-      - name: Build app package with retry
-        shell: bash
-        run: |
-          for attempt in 1 2; do
-            echo "Pack attempt ${attempt}"
-            if npm run pack; then
-              exit 0
-            fi
-            rm -rf dist
-            sleep $((attempt * 30))
-          done
-          echo "Default Electron download source failed; retrying with mirror."
-          export ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
-          export ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-builder-binaries/"
-          rm -rf dist
-          for attempt in 1 2 3; do
-            echo "Mirror pack attempt ${attempt}"
-            if npm run pack; then
-              exit 0
-            fi
-            rm -rf dist
-            sleep $((attempt * 30))
-          done
-          npm run pack
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: false
-      - name: Prepare artifact directory
-        shell: bash
-        run: mkdir -p artifacts
-      - name: Archive Electron app on macOS
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          app_dir="$(find dist -maxdepth 1 -type d \( -name 'mac' -o -name 'mac-*' \) | head -n 1)"
-          test -n "$app_dir"
-          ditto -c -k --sequesterRsrc --keepParent "$app_dir" "artifacts/Keydock-for-Codex-Electron-macOS.zip"
-      - name: Archive Electron app on Linux
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
-        run: tar -C dist -czf artifacts/Keydock-for-Codex-Electron-Linux.tar.gz linux-unpacked
-      - name: Archive Electron app on Windows
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Test Rust app
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build release binary
+        run: cargo build --release --manifest-path src-tauri/Cargo.toml
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --locked
+
+      - name: Build Tauri bundle
+        run: cargo tauri build --bundles ${{ matrix.bundles }}
+
+      - name: Archive bundle artifacts
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          tar -C src-tauri/target/release/bundle -czf "artifacts/Keydock-for-Codex-${{ runner.os }}.tar.gz" .
+
+      - name: Archive bundle artifacts on Windows
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path "dist\\win-unpacked" -DestinationPath "artifacts\\Keydock-for-Codex-Electron-Windows.zip"
-      - name: Upload app artifacts
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          Compress-Archive -Path src-tauri\target\release\bundle\* -DestinationPath "artifacts\Keydock-for-Codex-${{ runner.os }}.zip"
+
+      - name: Upload bundle artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Keydock-for-Codex-${{ runner.os }}

@@ -21,3 +21,19 @@
 - Added empty-detail guidance with direct add buttons when no system or saved key is available.
 - Added `CKM_CODEX_PATH` support to the native Codex finder for stable tests.
 - Ran `npm test`, `make test`, `node --check` on Electron scripts, and `make app`; all passed.
+
+## 2026-06-10
+- Resumed on user request to fix `cargo test` failures from `src-tauri`.
+- Restored existing planning context and added a new src-tauri Rust test repair phase.
+- Read the pasted Cargo output and confirmed the first failures are missing module files plus missing Tauri icons.
+- Confirmed `src-tauri` is currently untracked and has no previous tracked module implementation to restore directly.
+- Added `src-tauri/src/validate.rs`, `store.rs`, `codex.rs`, `cli.rs`, and `commands.rs`.
+- Copied existing icon assets into `src-tauri/icons`.
+- `cargo fmt` could not run because `rustfmt` is not installed for the active Rust toolchain.
+- Ran `cargo test` in `src-tauri`; it passed with 5 Rust tests.
+- Started Rust/Tauri cleanup request: remove obsolete Electron/Objective-C components and update README with build/package instructions.
+- Migrated the reusable renderer UI into `ui/` and connected it to Tauri commands via the global Tauri invoke API.
+- Updated `src-tauri/tauri.conf.json` to load `../ui` and expose the Tauri global API.
+- Removed obsolete Electron, Objective-C native app, Node packaging, old tests, old app resources, local npm cache, and old generated artifacts.
+- Updated README and GitHub Actions workflows for Rust/Tauri testing, release builds, and bundle artifacts.
+- Verified `cargo test`, `cargo build --release`, and `cargo tauri build --bundles app`.
