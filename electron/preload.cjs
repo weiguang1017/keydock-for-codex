@@ -1,4 +1,7 @@
-import { contextBridge, ipcRenderer } from 'electron';
+// CommonJS preload: a sandboxed renderer can only load a CommonJS preload, so
+// this must stay `.cjs` even though the rest of the app is ESM. It bridges the
+// renderer to the main process over a fixed, allow-listed set of IPC channels.
+const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('keydock', {
   listKeys: () => ipcRenderer.invoke('keys:list'),

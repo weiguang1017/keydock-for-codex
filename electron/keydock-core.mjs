@@ -461,7 +461,10 @@ export function readCodexProfile(directory = process.env.CODEX_HOME || path.join
   const apiKey = findApiKeyInAuth(auth);
   profile.maskedKey = maskKey(apiKey);
   profile.models = readCodexModelCache(directory, profile.model);
-  profile.configured = Boolean(apiKey) || profile.hasProviderBaseUrl;
+  // "Configured" means an actual API key is present. A lone base_url without a
+  // key is not a usable Codex login, so we must not report it as configured —
+  // otherwise the UI would hide the "add a key" guidance on every platform.
+  profile.configured = Boolean(apiKey);
   profile.apiKey = apiKey;
   if (!profile.configured && !profile.message) {
     if (!profile.hasDirectory) profile.message = 'Codex config directory was not found.';
