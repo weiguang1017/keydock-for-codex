@@ -249,6 +249,154 @@ function readCodexModelCache(directory, selectedModel) {
   return uniqueStrings([selectedModel, ...models]);
 }
 
+function formatTomlString(value) {
+  const text = String(value ?? '');
+  const escaped = text
+    .replaceAll('\\', '\\\\')
+    .replaceAll('"', '\\"')
+    .replaceAll('\n', '\\n')
+    .replaceAll('\r', '\\r')
+    .replaceAll('\t', '\\t');
+  return `"${escaped}"`;
+}
+
+function sectionFingerprint(parts) {
+  return JSON.stringify((Array.isArray(parts) ? parts : []).map(trim));
+}
+
+// Edit a single `key = value` line in place inside the given TOML section,
+// preserving every other line, comment, and the original layout.
+// sectionPath is [] for the root table, or e.g. ['model_providers', 'OpenAI'].
+export function setTomlValue(content, sectionPath, key, value) {
+  const targetKey = trim(key);
+  const targetSection = sectionFingerprint(sectionPath);
+  const isRootTarget = sectionPath.length === 0;
+  const newline = content.includes('\r\n') ? '\r\n' : '\n';
+  const lines = String(content || '').split(/\r?\n/);
+  const formatted = `${targetKey} = ${formatTomlString(value)}`;
+
+  let inTarget = isRootTarget;
+  let sectionFound = isRootTarget;
+  let lastContentInSection = -1;
+  let firstHeaderIndex = -1;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const stripped = trim(stripTomlComment(lines[i]));
+    const headerMatch = stripped.match(/^\[([^\]]+)]$/);
+    if (headerMatch) {
+      if (firstHeaderIndex === -1) firstHeaderIndex = i;
+      const section = splitTomlPath(headerMatch[1]);
+      inTarget = !isRootTarget && sectionFingerprint(section) === targetSection;
+      if (inTarget) {
+        sectionFound = true;
+        lastContentInSection = i;
+      }
+      continue;
+    }
+    if (!inTarget) continue;
+    if (stripped) lastContentInSection = i;
+    const separator = stripped.indexOf('=');
+    if (separator > 0 && trim(stripped.slice(0, separator)) === targetKey) {
+      lines[i] = formatted;
+      return lines.join(newline);
+    }
+  }
+
+  if (isRootTarget) {
+    const insertAt = firstHeaderIndex === -1 ? lines.length : firstHeaderIndex;
+    lines.splice(insertAt, 0, formatted);
+    return lines.join(newline);
+  }
+  if (sectionFound) {
+    lines.splice(lastContentInSection + 1, 0, formatted);
+    return lines.join(newline);
+  }
+  const block = [];
+  if (lines.length && trim(lines[lines.length - 1]) !== '') block.push('');
+  block.push(`[${sectionPath.map(trim).join('.')}]`);
+  block.push(formatted);
+  return [...lines, ...block].join(newline);
+}
+
+function defaultConfigTemplate(provider, baseUrl) {
+  return [
+    `model_provider = "${provider}"`,
+    '',
+    `[model_providers.${provider}]`,
+    `name = "${provider}"`,
+    `base_url = "${baseUrl}"`,
+    'wire_api = "responses"',
+    'requires_openai_auth = true',
+    ''
+  ].join('\n');
+}
+
+function backupFile(filePath) {
+  try {
+    if (fs.existsSync(filePath)) fs.copyFileSync(filePath, `${filePath}.bak`);
+  } catch {
+    // Backups are best-effort; a failed copy must not block switching.
+  }
+}
+
+function atomicWrite(filePath, content, mode = 0o600) {
+  ensureDir(path.dirname(filePath));
+  const tmpPath = `${filePath}.tmp-${randomUUID()}`;
+  fs.writeFileSync(tmpPath, content, { mode });
+  fs.renameSync(tmpPath, filePath);
+}
+
+// Switch the active Codex key by rewriting ~/.codex/config.toml (base_url + model)
+// and auth.json (OPENAI_API_KEY) directly, preserving unrelated content.
+export function applyCodexProfile(options = {}) {
+  const directory = options.directory || process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+  const apiKey = trim(options.apiKey);
+  if (!apiKey) throw new Error('API key is required to update Codex configuration.');
+  const baseUrl = normalizeBaseUrl(options.baseUrl || DEFAULT_BASE_URL);
+  const model = trim(options.model);
+  const configPath = path.join(directory, 'config.toml');
+  const authPath = path.join(directory, 'auth.json');
+  ensureDir(directory);
+
+  let providerName = trim(options.providerName);
+  let configContent = '';
+  if (fs.existsSync(configPath)) {
+    configContent = fs.readFileSync(configPath, 'utf8');
+    if (!providerName) {
+      const parsed = parseCodexConfig(configContent);
+      providerName = firstString(
+        parsed.root.model_provider,
+        parsed.root.default_model_provider,
+        parsed.root.provider
+      );
+    }
+    backupFile(configPath);
+  }
+  if (!providerName) providerName = 'OpenAI';
+  if (!trim(configContent)) configContent = defaultConfigTemplate(providerName, baseUrl);
+
+  let nextConfig = setTomlValue(configContent, [], 'model_provider', providerName);
+  if (model) nextConfig = setTomlValue(nextConfig, [], 'model', model);
+  nextConfig = setTomlValue(nextConfig, ['model_providers', providerName], 'base_url', baseUrl);
+  if (!nextConfig.endsWith('\n')) nextConfig += '\n';
+  atomicWrite(configPath, nextConfig);
+
+  let auth = {};
+  if (fs.existsSync(authPath)) {
+    backupFile(authPath);
+    try {
+      auth = readJson(authPath, {});
+    } catch {
+      auth = {};
+    }
+  }
+  if (!auth || typeof auth !== 'object') auth = {};
+  auth.OPENAI_API_KEY = apiKey;
+  atomicWrite(authPath, `${JSON.stringify(auth, null, 2)}\n`);
+
+  return { directory, configPath, authPath, providerName, baseUrl, model };
+}
+
 export function readCodexProfile(directory = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')) {
   const configPath = path.join(directory, 'config.toml');
   const authPath = path.join(directory, 'auth.json');
@@ -263,6 +411,7 @@ export function readCodexProfile(directory = process.env.CODEX_HOME || path.join
     label: DEFAULT_CODEX_PROFILE_LABEL,
     providerName: '',
     baseUrl: DEFAULT_BASE_URL,
+    hasProviderBaseUrl: false,
     model: '',
     models: [],
     maskedKey: '',
@@ -289,15 +438,16 @@ export function readCodexProfile(directory = process.env.CODEX_HOME || path.join
     || {};
   profile.providerName = providerName || firstString(provider.name) || 'OpenAI';
   profile.label = profile.providerName ? `Codex ${profile.providerName}` : DEFAULT_CODEX_PROFILE_LABEL;
-  profile.baseUrl = firstString(
+  const providerBaseUrl = firstString(
     provider.base_url,
     provider.baseURL,
     provider.api_base,
     provider.api_base_url,
     parsedConfig.root.base_url,
-    parsedConfig.root.api_base,
-    DEFAULT_BASE_URL
+    parsedConfig.root.api_base
   );
+  profile.hasProviderBaseUrl = Boolean(providerBaseUrl);
+  profile.baseUrl = providerBaseUrl || DEFAULT_BASE_URL;
   profile.model = firstString(parsedConfig.root.model, provider.model, parsedConfig.root.default_model);
 
   let auth = {};
@@ -311,7 +461,7 @@ export function readCodexProfile(directory = process.env.CODEX_HOME || path.join
   const apiKey = findApiKeyInAuth(auth);
   profile.maskedKey = maskKey(apiKey);
   profile.models = readCodexModelCache(directory, profile.model);
-  profile.configured = Boolean(apiKey);
+  profile.configured = Boolean(apiKey) || profile.hasProviderBaseUrl;
   profile.apiKey = apiKey;
   if (!profile.configured && !profile.message) {
     if (!profile.hasDirectory) profile.message = 'Codex config directory was not found.';

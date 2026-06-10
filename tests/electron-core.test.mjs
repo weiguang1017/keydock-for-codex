@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   KeydockStore,
   apiKeyStdin,
+  applyCodexProfile,
   commandInvocation,
   extractModels,
   findCodexPath,
@@ -14,6 +15,7 @@ import {
   normalizeBaseUrl,
   parseCodexConfig,
   readCodexProfile,
+  setTomlValue,
   validateKey
 } from '../electron/keydock-core.mjs';
 
@@ -90,6 +92,7 @@ assert.equal(profile.configured, true);
 assert.equal(profile.baseUrl, 'https://cursorvip.com');
 assert.equal(profile.model, 'gpt-5.5');
 assert.equal(profile.maskedKey, 'sk-code...7890');
+assert.equal(profile.hasProviderBaseUrl, true);
 assert.deepEqual(profile.models.slice(0, 2), ['gpt-5.5', 'gpt-4.1']);
 const imported = store.upsertCodexProfile(profile);
 assert.equal(imported.active, true);
@@ -110,5 +113,68 @@ assert.equal(path.basename(found).toLowerCase(), path.basename(codexPath).toLowe
 const status = await loginWithCodex('sk-test-stdin-1234567890', found);
 assert.match(status, /Logged in using an API key/);
 assert.equal(fs.readFileSync(capturePath, 'utf8'), 'sk-test-stdin-1234567890');
+
+// readCodexProfile reports no configuration when the directory is empty.
+const emptyHome = tempDir('codex-empty');
+const emptyProfile = readCodexProfile(emptyHome);
+assert.equal(emptyProfile.configured, false);
+assert.equal(emptyProfile.hasProviderBaseUrl, false);
+
+// setTomlValue inserts a missing key into an existing section in place.
+const insertedToml = setTomlValue('[model_providers.OpenAI]\nbase_url = "https://x"\n', ['model_providers', 'OpenAI'], 'name', 'OpenAI');
+assert.equal(parseCodexConfig(insertedToml).providers.OpenAI.name, 'OpenAI');
+
+// applyCodexProfile rewrites base_url + model + key while preserving comments and other fields.
+const applyHome = tempDir('apply-home');
+const originalConfig = [
+  '# top comment',
+  'model_provider = "OpenAI"',
+  'model = "gpt-5.5"',
+  'review_model = "gpt-5.5"',
+  'disable_response_storage = true',
+  '',
+  '[model_providers.OpenAI]',
+  'name = "OpenAI"',
+  'base_url = "https://ai.bearjia.cn"',
+  'wire_api = "responses"  # keep this comment',
+  'requires_openai_auth = true',
+  '',
+  '[features]',
+  'goals = true',
+  ''
+].join('\n');
+fs.writeFileSync(path.join(applyHome, 'config.toml'), originalConfig);
+fs.writeFileSync(path.join(applyHome, 'auth.json'), JSON.stringify({ OPENAI_API_KEY: 'sk-old-0000000000', tokens: { id: 'keep-me' } }));
+const applied = applyCodexProfile({
+  directory: applyHome,
+  baseUrl: 'https://relay.example.com/v1',
+  apiKey: 'sk-new-1234567890',
+  model: 'gpt-6'
+});
+assert.equal(applied.providerName, 'OpenAI');
+const newConfigText = fs.readFileSync(path.join(applyHome, 'config.toml'), 'utf8');
+const newConfig = parseCodexConfig(newConfigText);
+assert.equal(newConfig.root.model, 'gpt-6');
+assert.equal(newConfig.root.review_model, 'gpt-5.5');
+assert.equal(newConfig.root.disable_response_storage, true);
+assert.equal(newConfig.providers.OpenAI.base_url, 'https://relay.example.com/v1');
+assert.equal(newConfig.providers.OpenAI.wire_api, 'responses');
+assert.equal(newConfigText.includes('# top comment'), true);
+assert.equal(newConfigText.includes('# keep this comment'), true);
+assert.equal(newConfigText.includes('[features]'), true);
+const newAuth = JSON.parse(fs.readFileSync(path.join(applyHome, 'auth.json'), 'utf8'));
+assert.equal(newAuth.OPENAI_API_KEY, 'sk-new-1234567890');
+assert.equal(newAuth.tokens.id, 'keep-me');
+assert.equal(fs.existsSync(path.join(applyHome, 'config.toml.bak')), true);
+assert.equal(fs.existsSync(path.join(applyHome, 'auth.json.bak')), true);
+
+// applyCodexProfile creates a fresh, parseable config when none exists.
+const freshHome = tempDir('apply-fresh');
+applyCodexProfile({ directory: freshHome, baseUrl: 'https://fresh.example.com/v1', apiKey: 'sk-fresh-1234567890', model: 'gpt-7' });
+const freshConfig = parseCodexConfig(fs.readFileSync(path.join(freshHome, 'config.toml'), 'utf8'));
+assert.equal(freshConfig.root.model_provider, 'OpenAI');
+assert.equal(freshConfig.root.model, 'gpt-7');
+assert.equal(freshConfig.providers.OpenAI.base_url, 'https://fresh.example.com/v1');
+assert.equal(JSON.parse(fs.readFileSync(path.join(freshHome, 'auth.json'), 'utf8')).OPENAI_API_KEY, 'sk-fresh-1234567890');
 
 console.log('PASS: Keydock for Codex Electron core tests completed.');

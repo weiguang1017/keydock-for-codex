@@ -1,4 +1,5 @@
 build/
+.omc/
 dist/
 node_modules/
 .cache/

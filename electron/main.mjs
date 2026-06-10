@@ -3,10 +3,10 @@ import { fileURLToPath } from 'node:url';
 import { app, BrowserWindow, ipcMain, safeStorage } from 'electron';
 import {
   APP_NAME,
+  applyCodexProfile,
   extractMaskedKeyFromStatus,
   KeydockStore,
   findCodexPath,
-  loginWithCodex,
   publicCodexProfile,
   readCodexProfile,
   readCodexLogin,
@@ -97,11 +97,23 @@ ipcMain.handle('keys:switch', async (_event, { id }) => {
   const check = await validateKey(apiKey, { baseUrl: record?.baseUrl });
   if (!check.valid) throw new Error(check.message);
   store.markValidation(id, check);
-  const codexPath = await findCodexPath();
-  const status = await loginWithCodex(apiKey, codexPath);
-  await restartCodexDesktop(codexPath);
+  // Switch by writing base_url + model into config.toml and the key into auth.json.
+  applyCodexProfile({
+    baseUrl: record?.baseUrl,
+    apiKey,
+    model: record?.model
+  });
+  let restarted = false;
+  let warning = '';
+  try {
+    const codexPath = await findCodexPath().catch(() => null);
+    await restartCodexDesktop(codexPath);
+    restarted = true;
+  } catch (error) {
+    warning = error?.message || 'Codex restart failed; please restart Codex manually.';
+  }
   store.markActive(id);
-  return { status };
+  return { restarted, warning, baseUrl: record?.baseUrl, model: record?.model };
 });
 
 ipcMain.handle('app:diagnostics', async () => {

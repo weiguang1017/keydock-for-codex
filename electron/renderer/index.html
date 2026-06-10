@@ -7,128 +7,63 @@
     <link rel="stylesheet" href="./styles.css">
   </head>
   <body>
-    <main class="shell">
-      <aside class="sidebar">
+    <div class="app">
+      <header class="topbar">
         <div class="brand">
           <div class="mark">K</div>
-          <div>
+          <div class="brand-text">
             <h1>Keydock</h1>
             <p data-i18n="appSubtitle">for Codex</p>
           </div>
         </div>
-        <button id="addButton" class="icon-button" data-i18n-title="addApiKey" title="Add API key">+</button>
-        <label class="search-box">
-          <span data-i18n="searchKeys">Search keys</span>
-          <input id="searchField" type="search" data-i18n-placeholder="searchPlaceholder" placeholder="Search name, URL, model">
-        </label>
-        <div id="emptyState" class="empty-state hidden">
-          <strong data-i18n="emptyTitle">Add your first key</strong>
-          <p id="emptyHint" data-i18n="emptyHint">No saved keys were found. Add one to start switching quickly.</p>
-          <button id="emptyAddButton" type="button" data-i18n="addApiKey">Add API key</button>
+        <div class="topbar-tools">
+          <label class="language-picker">
+            <span data-i18n="language">Language</span>
+            <select id="languageSelect">
+              <option value="auto" data-i18n="languageAuto">Auto</option>
+              <option value="en" data-i18n="languageEnglish">English</option>
+              <option value="zh" data-i18n="languageChinese">中文</option>
+              <option value="ja" data-i18n="languageJapanese">日本語</option>
+            </select>
+          </label>
+          <button id="addButton" type="button" class="primary add-btn" data-i18n="addApiKey">Add API key</button>
         </div>
-        <div id="keyList" class="key-list"></div>
-      </aside>
+      </header>
 
-      <section class="detail">
-        <header class="detail-header">
-          <div>
-            <p class="eyebrow" data-i18n="activeStation">Active key station</p>
-            <h2 id="detailTitle">No key selected</h2>
+      <main class="content">
+        <section class="block">
+          <div class="block-head">
+            <h2 data-i18n="currentActive">Current key</h2>
           </div>
-          <div class="header-tools">
-            <label class="language-picker">
-              <span data-i18n="language">Language</span>
-              <select id="languageSelect">
-                <option value="auto" data-i18n="languageAuto">Auto</option>
-                <option value="en" data-i18n="languageEnglish">English</option>
-                <option value="zh" data-i18n="languageChinese">中文</option>
-                <option value="ja" data-i18n="languageJapanese">日本語</option>
-              </select>
+          <div id="activeCard" class="active-card"></div>
+        </section>
+
+        <section class="block">
+          <div class="block-head">
+            <h2 data-i18n="allKeys">All keys</h2>
+            <label class="search-box">
+              <input id="searchField" type="search" data-i18n-placeholder="searchPlaceholder" placeholder="Search name, URL, model">
             </label>
-            <div id="diag" class="diag">Checking Codex CLI...</div>
           </div>
-        </header>
-
-        <div class="status-strip">
-          <div>
-            <span data-i18n="status">Status</span>
-            <strong id="statusSummary">-</strong>
+          <div id="emptyState" class="empty-state hidden">
+            <strong data-i18n="emptyTitle">Add your first key</strong>
+            <p id="emptyHint" data-i18n="emptyHint">No saved keys were found. Add one to start switching quickly.</p>
+            <button id="emptyAddButton" type="button" class="primary" data-i18n="addApiKey">Add API key</button>
           </div>
-          <div>
-            <span data-i18n="baseUrl">Base URL</span>
-            <code id="baseUrlSummary">-</code>
-          </div>
-          <div>
-            <span data-i18n="model">Model</span>
-            <code id="modelSummary">-</code>
-          </div>
-        </div>
-
-        <section id="detailEmpty" class="detail-empty hidden">
-          <strong data-i18n="emptyTitle">Add your first key</strong>
-          <p data-i18n="codexNeedsSetup">No configured Codex key found. Add an API key below to start.</p>
-          <button id="detailAddButton" type="button" class="primary" data-i18n="addApiKey">Add API key</button>
+          <div id="keyGrid" class="key-grid"></div>
         </section>
+      </main>
 
-        <div id="detailFields" class="fields">
-          <label>
-            <span data-i18n="name">Name</span>
-            <input id="nameField" type="text" autocomplete="off">
-          </label>
-          <label>
-            <span data-i18n="baseUrl">Base URL</span>
-            <span class="field-row">
-              <input id="baseUrlField" type="url" autocomplete="off">
-              <button id="copyBaseUrlButton" type="button" class="tool-button" data-i18n-title="copyBaseUrl" title="Copy Base URL">⧉</button>
-            </span>
-          </label>
-          <label>
-            <span data-i18n="maskedKey">Masked key</span>
-            <span class="field-row">
-              <input id="maskedField" type="text" readonly>
-              <button id="copyMaskedButton" type="button" class="tool-button" data-i18n-title="copyMaskedKey" title="Copy masked key">⧉</button>
-            </span>
-          </label>
-          <label>
-            <span data-i18n="model">Model</span>
-            <select id="modelField"></select>
-          </label>
-          <label>
-            <span data-i18n="status">Status</span>
-            <input id="statusField" type="text" readonly>
-          </label>
-          <label>
-            <span data-i18n="lastChecked">Last checked</span>
-            <input id="checkedField" type="text" readonly>
-          </label>
-        </div>
-
-        <section id="modelSection" class="model-section" aria-live="polite">
-          <div class="section-header">
-            <div class="section-label" data-i18n="models">Models</div>
-            <button id="copyModelsButton" type="button" class="link-button" data-i18n="copyModels">Copy models</button>
-          </div>
-          <div id="modelList" class="model-list muted-box">No models reported yet</div>
-        </section>
-
-        <div id="detailActions" class="actions">
-          <button id="saveDetailsButton" data-i18n="saveDetails">Save details</button>
-          <button id="checkButton" data-i18n="checkKey">Check key</button>
-          <button id="switchButton" class="primary" data-i18n="switchRestart">Switch & restart</button>
-          <button id="deleteButton" class="danger" data-i18n="delete">Delete</button>
-        </div>
-
-        <footer>
-          <div id="busy" class="spinner hidden"></div>
-          <p id="message">Terminal Codex sessions must be reopened after switching.</p>
-        </footer>
-      </section>
-    </main>
+      <footer class="statusbar">
+        <div id="busy" class="spinner hidden"></div>
+        <p id="message" data-i18n="footerMessage">Terminal Codex sessions must be reopened after switching.</p>
+      </footer>
+    </div>
 
     <dialog id="addDialog">
       <form method="dialog">
         <h3 data-i18n="addApiKey">Add API key</h3>
-        <p class="dialog-note" data-i18n="keyWillBeChecked">The key will be checked before it is saved.</p>
+        <p class="dialog-note" data-i18n="keyWillBeChecked">Test the key to load available models, then add it.</p>
         <label>
           <span data-i18n="name">Name</span>
           <input id="newName" type="text" value="OpenAI" required>
@@ -141,14 +76,36 @@
           <span data-i18n="apiKey">API key</span>
           <input id="newKey" type="password" autocomplete="off" required>
         </label>
-        <div class="dialog-actions">
-          <button id="validateNewButton" type="button" data-i18n="validateLoadModels">Validate & load models</button>
+        <div class="dialog-test">
+          <button id="validateNewButton" type="button" data-i18n="test">Test</button>
           <select id="newModelField" aria-label="Model"></select>
-          <div id="newModelStatus" class="muted-box">Validate to load models</div>
         </div>
+        <div id="newModelStatus" class="muted-box" data-i18n="modelPlaceholder">Validate to load models</div>
         <menu>
           <button id="cancelAdd" type="button" value="cancel" data-i18n="cancel">Cancel</button>
           <button id="confirmAdd" type="submit" value="default" class="primary" data-i18n="add" disabled>Add</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="editDialog">
+      <form method="dialog">
+        <h3 data-i18n="editKey">Edit key</h3>
+        <label>
+          <span data-i18n="name">Name</span>
+          <input id="editName" type="text">
+        </label>
+        <label>
+          <span data-i18n="baseUrl">Base URL</span>
+          <input id="editBaseUrl" type="url">
+        </label>
+        <label>
+          <span data-i18n="model">Model</span>
+          <select id="editModelField"></select>
+        </label>
+        <menu>
+          <button id="cancelEdit" type="button" value="cancel" data-i18n="cancel">Cancel</button>
+          <button id="saveEdit" type="submit" value="default" class="primary" data-i18n="save">Save</button>
         </menu>
       </form>
     </dialog>
