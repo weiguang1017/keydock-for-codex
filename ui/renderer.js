@@ -120,7 +120,8 @@ const translations = {
     editKeyPlaceholder: 'Leave blank to keep the current key',
     confirmTitle: 'Please confirm',
     detailTitle: 'Check details',
-    close: 'Close'
+    close: 'Close',
+    cannotDeleteActive: 'The key in use cannot be deleted. Switch to another key first.'
   },
   zh: {
     appSubtitle: 'for Codex',
@@ -205,7 +206,8 @@ const translations = {
     editKeyPlaceholder: '留空则保持当前 Key',
     confirmTitle: '请确认',
     detailTitle: '检测详情',
-    close: '关闭'
+    close: '关闭',
+    cannotDeleteActive: '当前使用的 Key 不能删除，请先切换到其它 Key。'
   },
   ja: {
     appSubtitle: 'for Codex',
@@ -290,7 +292,8 @@ const translations = {
     editKeyPlaceholder: '空欄なら現在のキーを保持します',
     confirmTitle: '確認してください',
     detailTitle: 'チェック詳細',
-    close: '閉じる'
+    close: '閉じる',
+    cannotDeleteActive: '使用中のキーは削除できません。先に別のキーへ切り替えてください。'
   }
 };
 
@@ -708,21 +711,31 @@ async function testDraftKey() {
   }
   const fingerprint = draftFingerprint();
   setAddStatus(t('testingDraft'), 'pending');
-  const result = await withAction(t('testingDraft'), () => window.keydock.testDraftKey({ baseUrl, apiKey }));
-  if (!result?.valid) {
+  // Probe with exactly what is typed in the form; do not refresh the list (that
+  // would trigger a profile sync and is unrelated to testing a draft key).
+  try {
+    setBusy(true, t('testingDraft'));
+    const result = await window.keydock.testDraftKey({ baseUrl, apiKey });
+    if (!result?.valid) {
+      clearDraftValidation();
+      setAddStatus(result?.message || t('testFailed'), 'bad');
+      return null;
+    }
+    draftValidation = { ...result, fingerprint };
+    setDraftModels(result.models || [], result.model || '');
+    const modelCount = Array.isArray(result.models) ? result.models.length : 0;
+    setAddStatus(
+      modelCount > 0 ? `${t('testPassed')} (${t('modelsBadge', { count: modelCount })})` : t('testPassedNoModels'),
+      'ok'
+    );
+    return result;
+  } catch (error) {
     clearDraftValidation();
-    setAddStatus(result?.message || t('testFailed'), 'bad');
+    setAddStatus(error.message || t('testFailed'), 'bad');
     return null;
+  } finally {
+    setBusy(false);
   }
-  draftValidation = { ...result, fingerprint };
-  setDraftModels(result.models || [], result.model || '');
-  $('confirmAdd').disabled = false;
-  const modelCount = Array.isArray(result.models) ? result.models.length : 0;
-  setAddStatus(
-    modelCount > 0 ? `${t('testPassed')} (${t('modelsBadge', { count: modelCount })})` : t('testPassedNoModels'),
-    'ok'
-  );
-  return result;
 }
 
 async function addDraftKey() {
@@ -802,20 +815,28 @@ async function testEditKey() {
     return null;
   }
   setEditStatus(t('testingDraft'), 'pending');
-  const result = await withAction(t('testingDraft'), () =>
-    window.keydock.testDraftKey({ id: editingId, baseUrl, apiKey })
-  );
-  if (!result?.valid) {
-    setEditStatus(result?.message || t('testFailed'), 'bad');
+  // Probe with the values currently typed in the edit form (a blank API key
+  // falls back to the stored secret). Do not refresh the list while testing.
+  try {
+    setBusy(true, t('testingDraft'));
+    const result = await window.keydock.testDraftKey({ id: editingId, baseUrl, apiKey });
+    if (!result?.valid) {
+      setEditStatus(result?.message || t('testFailed'), 'bad');
+      return null;
+    }
+    setModelOptions($('editModelField'), result.models || [], $('editModelField').value || result.model || '');
+    const modelCount = Array.isArray(result.models) ? result.models.length : 0;
+    setEditStatus(
+      modelCount > 0 ? `${t('testPassed')} (${t('modelsBadge', { count: modelCount })})` : t('testPassedNoModels'),
+      'ok'
+    );
+    return result;
+  } catch (error) {
+    setEditStatus(error.message || t('testFailed'), 'bad');
     return null;
+  } finally {
+    setBusy(false);
   }
-  setModelOptions($('editModelField'), result.models || [], $('editModelField').value || result.model || '');
-  const modelCount = Array.isArray(result.models) ? result.models.length : 0;
-  setEditStatus(
-    modelCount > 0 ? `${t('testPassed')} (${t('modelsBadge', { count: modelCount })})` : t('testPassedNoModels'),
-    'ok'
-  );
-  return result;
 }
 
 async function saveEdit() {
@@ -824,14 +845,15 @@ async function saveEdit() {
   const baseUrl = requireValue('editBaseUrl', 'missingBaseUrl');
   if (!label || !baseUrl) return;
   const apiKey = $('editKey').value.trim();
-  await withAction(t('savingDetails'), () => window.keydock.updateMetadata({
+  const record = await withAction(t('savingDetails'), () => window.keydock.updateMetadata({
     id: editingId,
     label,
     baseUrl,
     model: $('editModelField').value,
     apiKey: apiKey || undefined
   }));
-  $('message').textContent = t('detailsSaved');
+  if (!record) return;
+  $('message').textContent = record.active ? `${t('detailsSaved')} ${t('cliReminder')}` : t('detailsSaved');
   $('editDialog').close();
   editingId = null;
 }
@@ -892,6 +914,11 @@ async function checkKey(id) {
 }
 
 async function deleteKey(id) {
+  const key = keys.find((item) => item.id === id);
+  if (key?.active) {
+    $('message').textContent = t('cannotDeleteActive');
+    return;
+  }
   const confirmed = await customConfirm(t('deleteConfirm'), t('delete'));
   if (!confirmed) return;
   await withAction(t('deletingKey'), () => window.keydock.deleteKey({ id }));

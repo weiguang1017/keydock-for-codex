@@ -108,27 +108,65 @@ pub fn update_metadata(
     api_key: Option<String>,
 ) -> Result<KeyRecord, String> {
     let store = KeydockStore::default();
-    let mut update = MetadataUpdate {
-        label,
-        base_url,
-        model,
-        ..MetadataUpdate::default()
-    };
+    let previous = store.list()?.into_iter().find(|item| item.id == id);
+
     // When a new API key is supplied, replace the stored secret and force a
     // re-check. Leaving the field blank keeps the existing key untouched.
-    if let Some(api_key) = api_key {
-        if !trim(&api_key).is_empty() {
-            store.set_secret(&id, &api_key)?;
-            update.available = Some(false);
-            update.validation_message = Some("Key changed. Check it again.".to_string());
+    let key_changed = api_key
+        .as_ref()
+        .map(|key| !trim(key).is_empty())
+        .unwrap_or(false);
+    if key_changed {
+        store.set_secret(&id, api_key.as_ref().unwrap())?;
+    }
+
+    let record = store.update_metadata(
+        &id,
+        MetadataUpdate {
+            label,
+            base_url,
+            model,
+            available: if key_changed { Some(false) } else { None },
+            validation_message: if key_changed {
+                Some("Key changed. Check it again.".to_string())
+            } else {
+                None
+            },
+            ..MetadataUpdate::default()
+        },
+    )?;
+
+    // For the active key, keep Codex's own config (~/.codex) in sync so the edit
+    // actually applies and is not reverted by the next list_keys() profile sync.
+    if record.active {
+        let base_changed = previous
+            .as_ref()
+            .map(|item| item.base_url != record.base_url)
+            .unwrap_or(true);
+        let model_changed = previous
+            .as_ref()
+            .map(|item| item.model != record.model)
+            .unwrap_or(true);
+        if key_changed || base_changed || model_changed {
+            let secret = store.secret(&id)?;
+            codex::apply_codex_profile(None, &secret, &record.base_url, &record.model, None)?;
         }
     }
-    store.update_metadata(id, update)
+
+    Ok(record)
 }
 
 #[tauri::command]
 pub fn delete_key(id: String) -> Result<bool, String> {
-    KeydockStore::default().remove(id)?;
+    let store = KeydockStore::default();
+    if let Some(record) = store.list()?.into_iter().find(|item| item.id == id) {
+        if record.active {
+            return Err(
+                "The key in use cannot be deleted. Switch to another key first.".to_string(),
+            );
+        }
+    }
+    store.remove(id)?;
     Ok(true)
 }
 
