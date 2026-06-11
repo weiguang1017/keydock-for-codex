@@ -31,6 +31,10 @@ pub struct Diagnostics {
     pub current_key: Option<CurrentKey>,
     pub codex_profile: CodexProfile,
     pub encryption: String,
+    /// True when the Codex desktop client is currently running.
+    pub codex_desktop_running: bool,
+    /// True when the Codex CLI binary is installed and resolvable.
+    pub codex_cli_available: bool,
 }
 
 #[tauri::command]
@@ -49,18 +53,51 @@ pub fn test_draft_key(
     id: Option<String>,
     base_url: Option<String>,
     api_key: String,
+    model: Option<String>,
 ) -> ValidationResult {
     // In the edit dialog the API key field may be left blank to keep the current
     // key — fall back to the stored secret so detection still works.
     let mut key = trim(&api_key);
+    let mut used_stored_secret = false;
     if key.is_empty() {
         if let Some(id) = id.as_ref() {
             if let Ok(secret) = KeydockStore::default().secret(id) {
                 key = secret;
+                used_stored_secret = true;
             }
         }
     }
-    validate_key(key, base_url.as_deref())
+
+    // List the available models first so the dialog can populate its dropdown.
+    let listing = validate_key(&key, base_url.as_deref());
+
+    // The `/models` endpoint of many OpenAI-compatible proxies does not actually
+    // authenticate the bearer token, so a wrong key still returns 200. Confirm the
+    // key with a real authenticated request (`POST /responses`) whenever we have a
+    // model to send. Skip this stricter probe when the key was pulled from storage
+    // unchanged — that secret is already known to work.
+    let chosen_model = trim(model.unwrap_or_default());
+    let probe_model = if !chosen_model.is_empty() {
+        chosen_model
+    } else {
+        trim(&listing.model)
+    };
+
+    if used_stored_secret || probe_model.is_empty() {
+        return listing;
+    }
+
+    let mut auth = probe_responses_key(&key, base_url.as_deref(), &probe_model);
+    if auth.valid {
+        // Carry the discovered model list back to the dialog.
+        if auth.models.is_empty() {
+            auth.models = listing.models;
+        }
+        if trim(&auth.model).is_empty() {
+            auth.model = probe_model;
+        }
+    }
+    auth
 }
 
 #[tauri::command]
@@ -238,6 +275,8 @@ pub fn diagnostics() -> Diagnostics {
         profile
     });
 
+    let desktop_running = cli::is_codex_desktop_running();
+
     match cli::find_codex_path() {
         Ok(path) => {
             let current_key = cli::read_codex_login(&path)
@@ -256,6 +295,8 @@ pub fn diagnostics() -> Diagnostics {
                 current_key,
                 codex_profile: profile,
                 encryption: "local fallback".to_string(),
+                codex_desktop_running: desktop_running,
+                codex_cli_available: true,
             }
         }
         Err(error) => Diagnostics {
@@ -264,6 +305,8 @@ pub fn diagnostics() -> Diagnostics {
             current_key: None,
             codex_profile: profile,
             encryption: "local fallback".to_string(),
+            codex_desktop_running: desktop_running,
+            codex_cli_available: false,
         },
     }
 }

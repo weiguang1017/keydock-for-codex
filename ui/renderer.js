@@ -9,7 +9,7 @@ const tauriInvoke = window.__TAURI__?.core?.invoke || window.__TAURI__?.invoke;
 if (!window.keydock && typeof tauriInvoke === 'function') {
   window.keydock = {
     listKeys: () => tauriInvoke('list_keys'),
-    testDraftKey: ({ id, baseUrl, apiKey }) => tauriInvoke('test_draft_key', { id, baseUrl, apiKey }),
+    testDraftKey: ({ id, baseUrl, apiKey, model }) => tauriInvoke('test_draft_key', { id, baseUrl, apiKey, model }),
     addKey: ({ label, baseUrl, apiKey, model, validation }) => tauriInvoke('add_key', {
       label,
       baseUrl,
@@ -77,6 +77,9 @@ const translations = {
     unavailable: 'Unavailable',
     available: 'Available',
     activeInCodex: 'Active in Codex',
+    activeInCodexApp: 'In use · Codex app running',
+    activeInCodexCli: 'In use · Codex CLI',
+    activeInCodexConfig: 'In use · written to config',
     notChecked: 'Not checked',
     noModels: 'No models reported yet',
     keyWillBeChecked: 'Test the key to load available models, then add it to Keydock.',
@@ -163,6 +166,9 @@ const translations = {
     unavailable: '不可用',
     available: '可用',
     activeInCodex: 'Codex 当前使用',
+    activeInCodexApp: '使用中 · 已检测到 Codex 应用运行',
+    activeInCodexCli: '使用中 · Codex CLI',
+    activeInCodexConfig: '使用中 · 已写入配置',
     notChecked: '未检查',
     noModels: '还没有返回模型',
     keyWillBeChecked: '先测试 Key 并加载可用模型，然后再添加到 Keydock。',
@@ -249,6 +255,9 @@ const translations = {
     unavailable: '利用不可',
     available: '利用可能',
     activeInCodex: 'Codex で使用中',
+    activeInCodexApp: '使用中 · Codex アプリ起動中',
+    activeInCodexCli: '使用中 · Codex CLI',
+    activeInCodexConfig: '使用中 · 設定に書き込み済み',
     notChecked: '未確認',
     noModels: 'モデルはまだ取得されていません',
     keyWillBeChecked: 'キーをテストして利用可能なモデルを読み込み、その後 Keydock に追加します。',
@@ -370,10 +379,20 @@ function setBusy(value, message) {
 
 function keyStatus(key) {
   if (!key) return '-';
-  if (key.active) return t('activeInCodex');
+  if (key.active) return activeUsageLabel();
   if (key.available) return t('available');
   if (key.lastValidatedAt) return t('unavailable');
   return t('notChecked');
+}
+
+// Describe where the active key is currently consumed, based on which Codex
+// surface is detected on this machine.
+function activeUsageLabel() {
+  const running = codexInfo?.codexDesktopRunning;
+  const cli = codexInfo?.codexCliAvailable;
+  if (running) return t('activeInCodexApp');
+  if (cli) return t('activeInCodexCli');
+  return t('activeInCodexConfig');
 }
 
 function keyStatusClass(key) {
@@ -715,7 +734,8 @@ async function testDraftKey() {
   // would trigger a profile sync and is unrelated to testing a draft key).
   try {
     setBusy(true, t('testingDraft'));
-    const result = await window.keydock.testDraftKey({ baseUrl, apiKey });
+    const model = $('newModelField').value.trim();
+    const result = await window.keydock.testDraftKey({ baseUrl, apiKey, model });
     if (!result?.valid) {
       clearDraftValidation();
       setAddStatus(result?.message || t('testFailed'), 'bad');
@@ -819,7 +839,8 @@ async function testEditKey() {
   // falls back to the stored secret). Do not refresh the list while testing.
   try {
     setBusy(true, t('testingDraft'));
-    const result = await window.keydock.testDraftKey({ id: editingId, baseUrl, apiKey });
+    const model = $('editModelField').value.trim();
+    const result = await window.keydock.testDraftKey({ id: editingId, baseUrl, apiKey, model });
     if (!result?.valid) {
       setEditStatus(result?.message || t('testFailed'), 'bad');
       return null;
