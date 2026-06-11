@@ -105,6 +105,10 @@ const translations = {
     currentConfiguredKey: 'Current Codex key: {maskedKey}',
     noBridge: 'Desktop bridge is unavailable. Launch the built app, not the browser preview.',
     modelPlaceholder: 'Test to load models',
+    modelInputPlaceholder: 'Select or type a model name',
+    testPassedNoModels: 'Key is valid. No models were returned — type the model name manually.',
+    showKey: 'Show key',
+    hideKey: 'Hide key',
     copyBaseUrl: 'Copy Base URL',
     copyMaskedKey: 'Copy masked key',
     copied: 'Copied.',
@@ -179,6 +183,10 @@ const translations = {
     currentConfiguredKey: '当前 Codex Key：{maskedKey}',
     noBridge: '桌面桥接不可用。请启动你构建出的 app，而不是浏览器预览页。',
     modelPlaceholder: '测试后加载模型',
+    modelInputPlaceholder: '选择或手动输入模型名',
+    testPassedNoModels: 'Key 可用。未自动获取到模型，请手动输入模型名。',
+    showKey: '显示明文',
+    hideKey: '隐藏',
     copyBaseUrl: '复制 Base URL',
     copyMaskedKey: '复制隐藏后的 Key',
     copied: '已复制。',
@@ -253,6 +261,10 @@ const translations = {
     currentConfiguredKey: '現在の Codex キー: {maskedKey}',
     noBridge: 'デスクトップブリッジが使えません。ブラウザプレビューではなく、ビルドした app を起動してください。',
     modelPlaceholder: 'テスト後にモデルを読み込み',
+    modelInputPlaceholder: 'モデルを選択または入力',
+    testPassedNoModels: 'キーは有効です。モデルが取得できませんでした。モデル名を手動で入力してください。',
+    showKey: 'キーを表示',
+    hideKey: 'キーを隠す',
     copyBaseUrl: 'Base URLをコピー',
     copyMaskedKey: 'マスク済みキーをコピー',
     copied: 'コピーしました。',
@@ -518,23 +530,25 @@ async function copyText(value) {
 
 /* ---------- Add dialog ---------- */
 
-function setModelOptions(select, models, selectedModel) {
-  select.innerHTML = '';
+function setModelOptions(input, models, selectedModel) {
   const normalized = Array.isArray(models) ? models : [];
-  if (normalized.length === 0) {
-    const option = document.createElement('option');
-    option.value = '';
-    option.textContent = t('modelPlaceholder');
-    select.append(option);
-    return;
+  const listId = input.getAttribute('list');
+  const list = listId ? document.getElementById(listId) : null;
+  if (list) {
+    list.innerHTML = '';
+    for (const model of normalized) {
+      const option = document.createElement('option');
+      option.value = model;
+      list.append(option);
+    }
   }
-  for (const model of normalized) {
-    const option = document.createElement('option');
-    option.value = model;
-    option.textContent = model;
-    select.append(option);
+  if (selectedModel && (normalized.length === 0 || normalized.includes(selectedModel))) {
+    input.value = selectedModel;
+  } else if (normalized.length > 0) {
+    input.value = normalized[0];
+  } else {
+    input.value = selectedModel || '';
   }
-  select.value = normalized.includes(selectedModel) ? selectedModel : normalized[0];
 }
 
 function draftFingerprint() {
@@ -600,7 +614,7 @@ async function testDraftKey() {
   $('confirmAdd').disabled = false;
   const modelCount = Array.isArray(result.models) ? result.models.length : 0;
   setAddStatus(
-    modelCount > 0 ? `${t('testPassed')} (${t('modelsBadge', { count: modelCount })})` : t('testPassed'),
+    modelCount > 0 ? `${t('testPassed')} (${t('modelsBadge', { count: modelCount })})` : t('testPassedNoModels'),
     'ok'
   );
   return result;
@@ -630,6 +644,8 @@ function resetAddForm() {
   $('newName').value = 'OpenAI';
   $('newBaseUrl').value = DEFAULT_BASE_URL;
   $('newKey').value = '';
+  $('newKey').type = 'password';
+  updateRevealIcon();
   clearDraftValidation();
 }
 
@@ -688,6 +704,27 @@ async function deleteKey(id) {
 }
 
 /* ---------- Wiring ---------- */
+
+const EYE_OPEN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+
+function updateRevealIcon() {
+  const input = $('newKey');
+  const button = $('toggleNewKey');
+  if (!input || !button) return;
+  const revealed = input.type === 'text';
+  button.innerHTML = revealed ? EYE_OFF : EYE_OPEN;
+  const label = t(revealed ? 'hideKey' : 'showKey');
+  button.title = label;
+  button.setAttribute('aria-label', label);
+}
+
+$('toggleNewKey').addEventListener('click', () => {
+  const input = $('newKey');
+  input.type = input.type === 'password' ? 'text' : 'password';
+  updateRevealIcon();
+  input.focus();
+});
 
 $('languageSelect').addEventListener('change', () => {
   localStorage.setItem(STORAGE_LANGUAGE_KEY, $('languageSelect').value);
@@ -787,5 +824,6 @@ window.addEventListener('languagechange', () => {
 });
 
 applyStaticText();
+updateRevealIcon();
 $('message').textContent = t('footerMessage');
 refresh().then(loadDiagnostics);
