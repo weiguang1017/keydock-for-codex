@@ -531,6 +531,58 @@ label span {
   align-items: center;
 }
 
+.dialog-status {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dialog-status::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--muted);
+}
+
+.dialog-status.pending {
+  color: var(--muted);
+}
+
+.dialog-status.pending::before {
+  background: var(--accent);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.dialog-status.ok {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 40%, var(--border));
+}
+
+.dialog-status.ok::before {
+  background: var(--ok);
+}
+
+.dialog-status.bad {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 40%, var(--border));
+}
+
+.dialog-status.bad::before {
+  background: var(--bad);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
 menu {
   display: flex;
   justify-content: flex-end;

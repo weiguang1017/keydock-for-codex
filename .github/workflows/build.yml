@@ -18,9 +18,9 @@ jobs:
           - os: macos-latest
             bundles: app
           - os: windows-latest
-            bundles: all
+            bundles: nsis msi
           - os: ubuntu-latest
-            bundles: all
+            bundles: deb rpm appimage
 
     steps:
       - name: Checkout

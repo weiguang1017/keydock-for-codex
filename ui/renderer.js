@@ -541,38 +541,68 @@ function draftFingerprint() {
   return [$('newBaseUrl').value.trim(), $('newKey').value.trim()].join('\n');
 }
 
+function setAddStatus(text, state = '') {
+  const node = $('addStatus');
+  if (!node) return;
+  if (!text) {
+    node.textContent = '';
+    node.className = 'dialog-status hidden';
+    return;
+  }
+  node.textContent = text;
+  node.className = `dialog-status${state ? ` ${state}` : ''}`;
+}
+
 function clearDraftValidation() {
   draftValidation = null;
   setModelOptions($('newModelField'), [], '');
-  $('newModelStatus').textContent = t('modelPlaceholder');
+  setAddStatus('');
   $('confirmAdd').disabled = true;
 }
 
 function setDraftModels(models, selectedModel = '') {
   setModelOptions($('newModelField'), models, selectedModel);
-  const normalized = Array.isArray(models) ? models : [];
-  $('newModelStatus').textContent = normalized.length > 0
-    ? normalized.slice(0, 8).join(', ')
-    : t('noModels');
 }
 
 async function testDraftKey() {
-  const label = requireValue('newName', 'missingName');
-  const baseUrl = requireValue('newBaseUrl', 'missingBaseUrl');
-  const apiKey = requireValue('newKey', 'missingApiKey');
-  if (!label || !baseUrl || !apiKey) return null;
-  if (!requireBridge()) return null;
+  if (!requireBridge()) {
+    setAddStatus(t('noBridge'), 'bad');
+    return null;
+  }
+  const label = $('newName').value.trim();
+  const baseUrl = $('newBaseUrl').value.trim();
+  const apiKey = $('newKey').value.trim();
+  if (!label) {
+    $('newName').focus();
+    setAddStatus(t('missingName'), 'bad');
+    return null;
+  }
+  if (!baseUrl) {
+    $('newBaseUrl').focus();
+    setAddStatus(t('missingBaseUrl'), 'bad');
+    return null;
+  }
+  if (!apiKey) {
+    $('newKey').focus();
+    setAddStatus(t('missingApiKey'), 'bad');
+    return null;
+  }
   const fingerprint = draftFingerprint();
+  setAddStatus(t('testingDraft'), 'pending');
   const result = await withAction(t('testingDraft'), () => window.keydock.testDraftKey({ baseUrl, apiKey }));
   if (!result?.valid) {
     clearDraftValidation();
-    $('message').textContent = result?.message || t('testFailed');
+    setAddStatus(result?.message || t('testFailed'), 'bad');
     return null;
   }
   draftValidation = { ...result, fingerprint };
   setDraftModels(result.models || [], result.model || '');
   $('confirmAdd').disabled = false;
-  $('message').textContent = t('testPassed');
+  const modelCount = Array.isArray(result.models) ? result.models.length : 0;
+  setAddStatus(
+    modelCount > 0 ? `${t('testPassed')} (${t('modelsBadge', { count: modelCount })})` : t('testPassed'),
+    'ok'
+  );
   return result;
 }
 
@@ -582,7 +612,7 @@ async function addDraftKey() {
   const apiKey = requireValue('newKey', 'missingApiKey');
   if (!label || !baseUrl || !apiKey) return null;
   if (!draftValidation?.valid || draftValidation.fingerprint !== draftFingerprint()) {
-    $('message').textContent = t('testBeforeAdd');
+    setAddStatus(t('testBeforeAdd'), 'pending');
     await testDraftKey();
     if (!draftValidation?.valid || draftValidation.fingerprint !== draftFingerprint()) return null;
   }
