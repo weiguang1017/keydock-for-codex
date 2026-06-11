@@ -315,6 +315,9 @@ code {
 }
 
 .status-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
   font-weight: 600;
 }
@@ -634,4 +637,120 @@ menu {
   .search-box input {
     width: 160px;
   }
+}
+
+/* ---------- Detail icon ---------- */
+
+.detail-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.detail-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 16%, transparent);
+}
+
+/* ---------- Model combobox ---------- */
+
+.combo {
+  position: relative;
+}
+
+.combo .combo-input {
+  width: 100%;
+  padding-right: 34px;
+}
+
+.combo-toggle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.combo-toggle:hover:not(:disabled) {
+  background: transparent;
+  color: var(--ink);
+}
+
+.combo.open .combo-toggle {
+  color: var(--accent);
+}
+
+.combo-menu {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 208px;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+}
+
+.combo-option {
+  padding: 7px 9px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.combo-option:hover,
+.combo-option.selected {
+  background: var(--surface-2);
+}
+
+.combo-empty {
+  padding: 7px 9px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ---------- Detail dialog ---------- */
+
+.detail-body {
+  max-height: 320px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--ink);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }

@@ -68,9 +68,62 @@ pub fn extract_masked_key_from_status(status_output: &str) -> String {
         .to_string()
 }
 
-pub fn restart_codex_desktop(_codex_path: Option<&PathBuf>) -> Result<(), String> {
+/// Returns true when the Codex desktop client appears to be running.
+pub fn is_codex_desktop_running() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = Command::new("/usr/bin/osascript")
+            .args([
+                "-e",
+                "tell application \"System Events\" to (count (processes whose bundle identifier is \"com.openai.codex\")) > 0",
+            ])
+            .output()
+        {
+            let stdout = trim(String::from_utf8_lossy(&output.stdout));
+            if stdout.eq_ignore_ascii_case("true") {
+                return true;
+            }
+            if stdout.eq_ignore_ascii_case("false") {
+                return false;
+            }
+        }
+        // Fallback to a plain process-name lookup if the AppleScript probe fails.
+        Command::new("/usr/bin/pgrep")
+            .args(["-x", "Codex"])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("tasklist.exe")
+            .args(["/FI", "IMAGENAME eq Codex.exe", "/NH"])
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).contains("Codex.exe"))
+            .unwrap_or(false)
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        Command::new("pgrep")
+            .args(["-x", "Codex"])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
+}
+
+/// Restart the Codex desktop client, but only when it is already running.
+/// Returns `Ok(true)` when it was running and got restarted, `Ok(false)` when
+/// it was not running (and is intentionally left closed rather than launched).
+pub fn restart_codex_desktop(_codex_path: Option<&PathBuf>) -> Result<bool, String> {
     if std::env::var("CKM_DISABLE_RESTART").ok().as_deref() == Some("1") {
-        return Ok(());
+        return Ok(false);
+    }
+
+    if !is_codex_desktop_running() {
+        return Ok(false);
     }
 
     #[cfg(target_os = "macos")]
@@ -89,18 +142,20 @@ pub fn restart_codex_desktop(_codex_path: Option<&PathBuf>) -> Result<(), String
         let _ = Command::new("taskkill.exe")
             .args(["/IM", "Codex.exe", "/F"])
             .output();
+        if let Some(codex_path) = _codex_path {
+            let _ = Command::new(codex_path).arg("app").output();
+        }
     }
 
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
         let _ = Command::new("/usr/bin/pkill").args(["-x", "Codex"]).output();
+        if let Some(codex_path) = _codex_path {
+            let _ = Command::new(codex_path).arg("app").output();
+        }
     }
 
-    #[cfg(not(target_os = "macos"))]
-    if let Some(codex_path) = _codex_path {
-        let _ = Command::new(codex_path).arg("app").output();
-    }
-    Ok(())
+    Ok(true)
 }
 
 fn shell_lookup() -> Result<PathBuf, String> {

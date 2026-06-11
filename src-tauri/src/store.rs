@@ -355,6 +355,32 @@ impl KeydockStore {
         self.reveal(payload)
     }
 
+    /// Replace the stored secret for an existing key and refresh its masked
+    /// representation. Used when editing a key's API key in place.
+    pub fn set_secret(
+        &self,
+        id: impl AsRef<str>,
+        api_key: impl AsRef<str>,
+    ) -> Result<(), String> {
+        let id = id.as_ref();
+        let api_key = trim(api_key);
+        if api_key.is_empty() {
+            return Err("API key is required.".to_string());
+        }
+        let mut records = self.list()?;
+        let record = records
+            .iter_mut()
+            .find(|item| item.id == id)
+            .ok_or_else(|| "Key not found.".to_string())?;
+        record.masked_key = mask_key(&api_key);
+        record.updated_at = now_iso();
+
+        let mut secrets = self.secrets()?;
+        secrets.secrets.insert(id.to_string(), self.protect(&api_key));
+        self.save_secrets(&secrets)?;
+        self.save_list(records)
+    }
+
     pub fn mark_validation(
         &self,
         id: impl AsRef<str>,
@@ -366,12 +392,18 @@ impl KeydockStore {
                 available: Some(result.valid),
                 status_code: Some(result.status_code),
                 validation_message: Some(result.message.clone()),
-                models: Some(result.models.clone()),
-                model: Some(if result.model.is_empty() {
-                    result.models.first().cloned().unwrap_or_default()
+                // Preserve previously stored models when this check did not fetch
+                // a list (e.g. the real /responses probe only tests availability).
+                models: if result.models.is_empty() {
+                    None
                 } else {
-                    result.model.clone()
-                }),
+                    Some(result.models.clone())
+                },
+                model: if result.model.is_empty() {
+                    None
+                } else {
+                    Some(result.model.clone())
+                },
                 last_validated_at: Some(now_iso()),
                 ..MetadataUpdate::default()
             },

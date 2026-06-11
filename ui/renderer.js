@@ -9,7 +9,7 @@ const tauriInvoke = window.__TAURI__?.core?.invoke || window.__TAURI__?.invoke;
 if (!window.keydock && typeof tauriInvoke === 'function') {
   window.keydock = {
     listKeys: () => tauriInvoke('list_keys'),
-    testDraftKey: ({ baseUrl, apiKey }) => tauriInvoke('test_draft_key', { baseUrl, apiKey }),
+    testDraftKey: ({ id, baseUrl, apiKey }) => tauriInvoke('test_draft_key', { id, baseUrl, apiKey }),
     addKey: ({ label, baseUrl, apiKey, model, validation }) => tauriInvoke('add_key', {
       label,
       baseUrl,
@@ -18,11 +18,12 @@ if (!window.keydock && typeof tauriInvoke === 'function') {
       validation
     }),
     updateName: ({ id, label }) => tauriInvoke('update_name', { id, label }),
-    updateMetadata: ({ id, label, baseUrl, model }) => tauriInvoke('update_metadata', {
+    updateMetadata: ({ id, label, baseUrl, model, apiKey }) => tauriInvoke('update_metadata', {
       id,
       label,
       baseUrl,
-      model
+      model,
+      apiKey
     }),
     deleteKey: ({ id }) => tauriInvoke('delete_key', { id }),
     validateKey: ({ id }) => tauriInvoke('validate_key_cmd', { id }),
@@ -112,7 +113,14 @@ const translations = {
     copyBaseUrl: 'Copy Base URL',
     copyMaskedKey: 'Copy masked key',
     copied: 'Copied.',
-    noMatches: 'No matching keys.'
+    noMatches: 'No matching keys.',
+    switchedRestarted: 'Switched. Config updated and the Codex client was restarted.',
+    switchedNoClient: 'Switched. Codex config updated.',
+    cliReminder: 'Codex CLI sessions only take effect after you exit and reopen the terminal.',
+    editKeyPlaceholder: 'Leave blank to keep the current key',
+    confirmTitle: 'Please confirm',
+    detailTitle: 'Check details',
+    close: 'Close'
   },
   zh: {
     appSubtitle: 'for Codex',
@@ -190,7 +198,14 @@ const translations = {
     copyBaseUrl: '复制 Base URL',
     copyMaskedKey: '复制隐藏后的 Key',
     copied: '已复制。',
-    noMatches: '没有匹配的 Key。'
+    noMatches: '没有匹配的 Key。',
+    switchedRestarted: '已切换，配置已更新并重启了 Codex 客户端。',
+    switchedNoClient: '已切换，Codex 配置已更新。',
+    cliReminder: 'Codex CLI 需退出当前终端会话后重新进入才生效。',
+    editKeyPlaceholder: '留空则保持当前 Key',
+    confirmTitle: '请确认',
+    detailTitle: '检测详情',
+    close: '关闭'
   },
   ja: {
     appSubtitle: 'for Codex',
@@ -268,7 +283,14 @@ const translations = {
     copyBaseUrl: 'Base URLをコピー',
     copyMaskedKey: 'マスク済みキーをコピー',
     copied: 'コピーしました。',
-    noMatches: '一致するキーはありません。'
+    noMatches: '一致するキーはありません。',
+    switchedRestarted: '切替しました。設定を更新し、Codex クライアントを再起動しました。',
+    switchedNoClient: '切替しました。Codex 設定を更新しました。',
+    cliReminder: 'Codex CLI はターミナルのセッションを終了して開き直すと反映されます。',
+    editKeyPlaceholder: '空欄なら現在のキーを保持します',
+    confirmTitle: '確認してください',
+    detailTitle: 'チェック詳細',
+    close: '閉じる'
   }
 };
 
@@ -455,12 +477,14 @@ function renderKeyGrid() {
 
   for (const key of list) {
     const modelCount = Array.isArray(key.models) ? key.models.length : 0;
+    const statusClass = keyStatusClass(key);
+    const showDetail = statusClass === 'bad' && !!(key.validationMessage || '').trim();
     const card = document.createElement('article');
     card.className = `key-card${key.active ? ' active' : ''}`;
     card.dataset.id = key.id;
     card.innerHTML = `
       <div class="key-card-head">
-        <span class="dot ${keyStatusClass(key)}"></span>
+        <span class="dot ${statusClass}"></span>
         <strong>${escapeHtml(key.label || '-')}</strong>
         ${key.active ? `<span class="badge">${escapeHtml(t('activeBadge'))}</span>` : ''}
       </div>
@@ -469,7 +493,10 @@ function renderKeyGrid() {
         <span class="url" title="${escapeHtml(key.baseUrl || '')}">${escapeHtml(key.baseUrl || DEFAULT_BASE_URL)}</span>
         <span class="model">${escapeHtml(key.model || (modelCount ? t('modelsBadge', { count: modelCount }) : '-'))}</span>
       </div>
-      <div class="status-line ${keyStatusClass(key)}">${escapeHtml(keyStatus(key))}</div>
+      <div class="status-line ${statusClass}">
+        <span class="status-text">${escapeHtml(keyStatus(key))}</span>
+        ${showDetail ? `<button type="button" class="detail-btn" data-act="detail" title="${escapeHtml(t('detailTitle'))}" aria-label="${escapeHtml(t('detailTitle'))}">&#9432;</button>` : ''}
+      </div>
       <div class="card-actions">
         <button type="button" class="primary" data-act="switch">${escapeHtml(t('switchAction'))}</button>
         <button type="button" data-act="check">${escapeHtml(t('check'))}</button>
@@ -528,20 +555,95 @@ async function copyText(value) {
   $('message').textContent = t('copied');
 }
 
-/* ---------- Add dialog ---------- */
+/* ---------- Model combobox ---------- */
+
+const comboModels = new WeakMap();
+
+function comboMenu(combo) {
+  return combo.querySelector('.combo-menu');
+}
+
+function comboInput(combo) {
+  return combo.querySelector('.combo-input');
+}
+
+function renderComboMenu(combo) {
+  const menu = comboMenu(combo);
+  const input = comboInput(combo);
+  if (!menu || !input) return;
+  const models = comboModels.get(combo) || [];
+  const filter = (input.value || '').trim().toLowerCase();
+  const matches = filter ? models.filter((model) => model.toLowerCase().includes(filter)) : models;
+  menu.innerHTML = '';
+  if (matches.length === 0) {
+    const empty = document.createElement('li');
+    empty.className = 'combo-empty';
+    empty.textContent = t('noModels');
+    menu.append(empty);
+    return;
+  }
+  for (const model of matches) {
+    const option = document.createElement('li');
+    option.className = 'combo-option';
+    option.textContent = model;
+    option.dataset.value = model;
+    if (model === input.value) option.classList.add('selected');
+    menu.append(option);
+  }
+}
+
+function closeAllCombos(except) {
+  document.querySelectorAll('.combo').forEach((combo) => {
+    if (combo === except) return;
+    const menu = comboMenu(combo);
+    if (menu) menu.classList.add('hidden');
+    combo.classList.remove('open');
+  });
+}
+
+function openCombo(combo) {
+  closeAllCombos(combo);
+  renderComboMenu(combo);
+  comboMenu(combo)?.classList.remove('hidden');
+  combo.classList.add('open');
+}
+
+function closeCombo(combo) {
+  comboMenu(combo)?.classList.add('hidden');
+  combo.classList.remove('open');
+}
+
+function initCombo(combo) {
+  if (!combo) return;
+  const input = comboInput(combo);
+  const toggle = combo.querySelector('.combo-toggle');
+  const menu = comboMenu(combo);
+  if (!input || !toggle || !menu) return;
+  toggle.addEventListener('click', (event) => {
+    event.preventDefault();
+    if (combo.classList.contains('open')) {
+      closeCombo(combo);
+    } else {
+      openCombo(combo);
+      input.focus();
+    }
+  });
+  input.addEventListener('click', () => openCombo(combo));
+  input.addEventListener('input', () => openCombo(combo));
+  // Use mousedown so the value is set before the input loses focus.
+  menu.addEventListener('mousedown', (event) => {
+    const option = event.target.closest('.combo-option');
+    if (!option) return;
+    event.preventDefault();
+    input.value = option.dataset.value || '';
+    closeCombo(combo);
+  });
+}
 
 function setModelOptions(input, models, selectedModel) {
-  const normalized = Array.isArray(models) ? models : [];
-  const listId = input.getAttribute('list');
-  const list = listId ? document.getElementById(listId) : null;
-  if (list) {
-    list.innerHTML = '';
-    for (const model of normalized) {
-      const option = document.createElement('option');
-      option.value = model;
-      list.append(option);
-    }
-  }
+  const normalized = Array.isArray(models) ? models.filter(Boolean) : [];
+  const combo = input.closest('.combo');
+  if (combo) comboModels.set(combo, normalized);
   if (selectedModel && (normalized.length === 0 || normalized.includes(selectedModel))) {
     input.value = selectedModel;
   } else if (normalized.length > 0) {
@@ -549,7 +651,10 @@ function setModelOptions(input, models, selectedModel) {
   } else {
     input.value = selectedModel || '';
   }
+  if (combo) renderComboMenu(combo);
 }
+
+/* ---------- Add dialog ---------- */
 
 function draftFingerprint() {
   return [$('newBaseUrl').value.trim(), $('newKey').value.trim()].join('\n');
@@ -657,14 +762,60 @@ function openAddDialog() {
 
 /* ---------- Edit dialog ---------- */
 
+function setEditStatus(text, state = '') {
+  const node = $('editStatus');
+  if (!node) return;
+  if (!text) {
+    node.textContent = '';
+    node.className = 'dialog-status hidden';
+    return;
+  }
+  node.textContent = text;
+  node.className = `dialog-status${state ? ` ${state}` : ''}`;
+}
+
 function openEditDialog(id) {
   const key = keys.find((item) => item.id === id);
   if (!key) return;
   editingId = id;
   $('editName').value = key.label || '';
   $('editBaseUrl').value = key.baseUrl || DEFAULT_BASE_URL;
+  $('editKey').value = '';
+  $('editKey').type = 'password';
+  updateEditRevealIcon();
   setModelOptions($('editModelField'), key.models, key.model);
+  setEditStatus('');
   $('editDialog').showModal();
+}
+
+async function testEditKey() {
+  if (!editingId) return null;
+  if (!requireBridge()) {
+    setEditStatus(t('noBridge'), 'bad');
+    return null;
+  }
+  const baseUrl = $('editBaseUrl').value.trim();
+  const apiKey = $('editKey').value.trim();
+  if (!baseUrl) {
+    $('editBaseUrl').focus();
+    setEditStatus(t('missingBaseUrl'), 'bad');
+    return null;
+  }
+  setEditStatus(t('testingDraft'), 'pending');
+  const result = await withAction(t('testingDraft'), () =>
+    window.keydock.testDraftKey({ id: editingId, baseUrl, apiKey })
+  );
+  if (!result?.valid) {
+    setEditStatus(result?.message || t('testFailed'), 'bad');
+    return null;
+  }
+  setModelOptions($('editModelField'), result.models || [], $('editModelField').value || result.model || '');
+  const modelCount = Array.isArray(result.models) ? result.models.length : 0;
+  setEditStatus(
+    modelCount > 0 ? `${t('testPassed')} (${t('modelsBadge', { count: modelCount })})` : t('testPassedNoModels'),
+    'ok'
+  );
+  return result;
 }
 
 async function saveEdit() {
@@ -672,15 +823,54 @@ async function saveEdit() {
   const label = requireValue('editName', 'missingName');
   const baseUrl = requireValue('editBaseUrl', 'missingBaseUrl');
   if (!label || !baseUrl) return;
+  const apiKey = $('editKey').value.trim();
   await withAction(t('savingDetails'), () => window.keydock.updateMetadata({
     id: editingId,
     label,
     baseUrl,
-    model: $('editModelField').value
+    model: $('editModelField').value,
+    apiKey: apiKey || undefined
   }));
   $('message').textContent = t('detailsSaved');
   $('editDialog').close();
   editingId = null;
+}
+
+/* ---------- Detail & confirm dialogs ---------- */
+
+function openDetailDialog(id) {
+  const key = keys.find((item) => item.id === id);
+  const message = (key?.validationMessage || '').trim() || t('notChecked');
+  $('detailBody').textContent = message;
+  $('detailDialog').showModal();
+}
+
+function customConfirm(message, confirmLabel) {
+  return new Promise((resolve) => {
+    const dialog = $('confirmDialog');
+    $('confirmMessage').textContent = message;
+    if (confirmLabel) $('confirmOk').textContent = confirmLabel;
+    let decided = false;
+    const finish = (result) => {
+      if (decided) return;
+      decided = true;
+      $('confirmOk').removeEventListener('click', onOk);
+      $('confirmCancel').removeEventListener('click', onCancel);
+      dialog.removeEventListener('cancel', onCancelEvent);
+      if (dialog.open) dialog.close();
+      resolve(result);
+    };
+    const onOk = () => finish(true);
+    const onCancel = () => finish(false);
+    const onCancelEvent = (event) => {
+      event.preventDefault();
+      finish(false);
+    };
+    $('confirmOk').addEventListener('click', onOk);
+    $('confirmCancel').addEventListener('click', onCancel);
+    dialog.addEventListener('cancel', onCancelEvent);
+    dialog.showModal();
+  });
 }
 
 /* ---------- Card actions ---------- */
@@ -688,7 +878,11 @@ async function saveEdit() {
 async function switchKey(id) {
   const result = await withAction(t('switching'), () => window.keydock.switchKey({ id }));
   if (result) {
-    $('message').textContent = result.restarted ? t('switchedOk') : t('switchedManual');
+    let head;
+    if (result.warning) head = result.warning;
+    else if (result.restarted) head = t('switchedRestarted');
+    else head = t('switchedNoClient');
+    $('message').textContent = `${head} ${t('cliReminder')}`;
   }
 }
 
@@ -698,7 +892,8 @@ async function checkKey(id) {
 }
 
 async function deleteKey(id) {
-  if (!confirm(t('deleteConfirm'))) return;
+  const confirmed = await customConfirm(t('deleteConfirm'), t('delete'));
+  if (!confirmed) return;
   await withAction(t('deletingKey'), () => window.keydock.deleteKey({ id }));
   $('message').textContent = t('keyDeleted');
 }
@@ -708,9 +903,9 @@ async function deleteKey(id) {
 const EYE_OPEN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
 const EYE_OFF = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
 
-function updateRevealIcon() {
-  const input = $('newKey');
-  const button = $('toggleNewKey');
+function updateRevealIconFor(inputId, buttonId) {
+  const input = $(inputId);
+  const button = $(buttonId);
   if (!input || !button) return;
   const revealed = input.type === 'text';
   button.innerHTML = revealed ? EYE_OFF : EYE_OPEN;
@@ -719,10 +914,25 @@ function updateRevealIcon() {
   button.setAttribute('aria-label', label);
 }
 
+function updateRevealIcon() {
+  updateRevealIconFor('newKey', 'toggleNewKey');
+}
+
+function updateEditRevealIcon() {
+  updateRevealIconFor('editKey', 'toggleEditKey');
+}
+
 $('toggleNewKey').addEventListener('click', () => {
   const input = $('newKey');
   input.type = input.type === 'password' ? 'text' : 'password';
   updateRevealIcon();
+  input.focus();
+});
+
+$('toggleEditKey').addEventListener('click', () => {
+  const input = $('editKey');
+  input.type = input.type === 'password' ? 'text' : 'password';
+  updateEditRevealIcon();
   input.focus();
 });
 
@@ -763,17 +973,30 @@ $('saveEdit').addEventListener('click', (event) => {
   saveEdit();
 });
 
+$('validateEditButton').addEventListener('click', () => {
+  testEditKey();
+});
+
+$('detailClose').addEventListener('click', () => {
+  $('detailDialog').close();
+});
+
 for (const id of ['newBaseUrl', 'newKey']) {
   $(id).addEventListener('input', clearDraftValidation);
 }
 
 $('keyGrid').addEventListener('click', (event) => {
   const button = event.target.closest('button[data-act]');
-  if (!button || busy) return;
+  if (!button) return;
   const card = button.closest('.key-card');
   const id = card?.dataset.id;
   if (!id) return;
   const action = button.dataset.act;
+  if (action === 'detail') {
+    openDetailDialog(id);
+    return;
+  }
+  if (busy) return;
   if (action === 'switch') switchKey(id);
   else if (action === 'check') checkKey(id);
   else if (action === 'edit') openEditDialog(id);
@@ -823,7 +1046,14 @@ window.addEventListener('languagechange', () => {
   if (languageMode() === 'auto') render();
 });
 
+initCombo($('newModelCombo'));
+initCombo($('editModelCombo'));
+document.addEventListener('click', (event) => {
+  if (!event.target.closest('.combo')) closeAllCombos();
+});
+
 applyStaticText();
 updateRevealIcon();
+updateEditRevealIcon();
 $('message').textContent = t('footerMessage');
 refresh().then(loadDiagnostics);

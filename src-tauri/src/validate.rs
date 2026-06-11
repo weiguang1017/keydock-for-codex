@@ -118,6 +118,58 @@ pub fn v1_model_endpoint(base_url: impl AsRef<str>) -> Result<reqwest::Url, Stri
     Ok(url)
 }
 
+pub fn responses_endpoint(base_url: impl AsRef<str>) -> Result<reqwest::Url, String> {
+    let normalized = normalize_base_url(base_url)?;
+    if normalized.is_empty() {
+        return Err("Base URL is required.".to_string());
+    }
+    let mut url = reqwest::Url::parse(&normalized)
+        .map_err(|error| error.to_string())?;
+    let current_path = url.path().trim_end_matches('/');
+    if !current_path.ends_with("/responses") {
+        let next_path = if current_path.is_empty() {
+            "/responses".to_string()
+        } else {
+            format!("{current_path}/responses")
+        };
+        url.set_path(&next_path);
+    }
+    Ok(url)
+}
+
+pub fn extract_error_message(body: &str) -> String {
+    let trimmed = trim(body);
+    if trimmed.is_empty() {
+        return "No response body was returned.".to_string();
+    }
+    if let Ok(value) = serde_json::from_str::<Value>(&trimmed) {
+        if let Some(message) = value
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+        {
+            return trim(message);
+        }
+        if let Some(message) = value.get("message").and_then(Value::as_str) {
+            return trim(message);
+        }
+        if let Some(error) = value.get("error").and_then(Value::as_str) {
+            return trim(error);
+        }
+    }
+    truncate_chars(&trimmed, 800)
+}
+
+fn truncate_chars(value: &str, max: usize) -> String {
+    if value.chars().count() <= max {
+        value.to_string()
+    } else {
+        let mut result: String = value.chars().take(max).collect();
+        result.push('…');
+        result
+    }
+}
+
 pub fn unique_strings(values: impl IntoIterator<Item = String>) -> Vec<String> {
     let mut result = Vec::new();
     for value in values {
@@ -242,6 +294,79 @@ pub fn validate_key(api_key: impl AsRef<str>, base_url: Option<&str>) -> Validat
     }
 }
 
+/// Probe a key the way Codex actually uses it: a real POST to the `/responses`
+/// endpoint. This reflects true availability (e.g. a 503 "no available channel")
+/// far better than listing `/models`, which can succeed even when the model is
+/// unusable.
+pub fn probe_responses_key(
+    api_key: impl AsRef<str>,
+    base_url: Option<&str>,
+    model: impl AsRef<str>,
+) -> ValidationResult {
+    let key = trim(api_key);
+    if key.is_empty() {
+        return ValidationResult::fail(0, "API key is required.", Vec::new());
+    }
+
+    if std::env::var("CKM_SKIP_NETWORK_VALIDATION_FOR_TESTS").ok().as_deref() == Some("1") {
+        return ValidationResult::ok("Test validation passed.", Vec::new());
+    }
+
+    let model = trim(model);
+    let base = base_url.unwrap_or(DEFAULT_BASE_URL);
+    if model.is_empty() {
+        // Without a model we cannot send a real request; fall back to listing models.
+        return validate_key(&key, Some(base));
+    }
+
+    let endpoint = match responses_endpoint(base) {
+        Ok(endpoint) => endpoint,
+        Err(message) => return ValidationResult::fail(0, message, Vec::new()),
+    };
+
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(45))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => return ValidationResult::fail(0, error.to_string(), Vec::new()),
+    };
+
+    let payload = serde_json::json!({
+        "model": model,
+        "input": "ping",
+        "max_output_tokens": 16,
+        "stream": false,
+    });
+
+    let response = match client
+        .post(endpoint)
+        .bearer_auth(&key)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header(reqwest::header::ACCEPT, "application/json")
+        .json(&payload)
+        .send()
+    {
+        Ok(response) => response,
+        Err(error) => {
+            return ValidationResult::fail(0, format!("Request failed: {error}"), Vec::new())
+        }
+    };
+
+    let status = response.status().as_u16();
+    let body = response.text().unwrap_or_default();
+
+    if (200..300).contains(&status) {
+        let mut result =
+            ValidationResult::ok(format!("Model responded successfully (HTTP {status})."), Vec::new());
+        result.model = model;
+        result
+    } else {
+        let detail = extract_error_message(&body);
+        ValidationResult::fail(status, format!("HTTP {status}: {detail}"), Vec::new())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,5 +404,38 @@ mod tests {
     fn extracts_models() {
         let payload = serde_json::json!({ "data": [{ "id": "gpt-z" }, { "id": "gpt-a" }] });
         assert_eq!(extract_models(&payload), vec!["gpt-a", "gpt-z"]);
+    }
+
+    #[test]
+    fn builds_responses_endpoint() {
+        assert_eq!(
+            responses_endpoint("https://api.openai.com/v1").unwrap().to_string(),
+            "https://api.openai.com/v1/responses"
+        );
+        assert_eq!(
+            responses_endpoint("https://new.sharedchat.cc/codex").unwrap().to_string(),
+            "https://new.sharedchat.cc/codex/responses"
+        );
+        assert_eq!(
+            responses_endpoint("https://api.example.com/v1/responses").unwrap().to_string(),
+            "https://api.example.com/v1/responses"
+        );
+    }
+
+    #[test]
+    fn extracts_error_messages() {
+        assert_eq!(
+            extract_error_message(r#"{"error":{"message":"No available channel"}}"#),
+            "No available channel"
+        );
+        assert_eq!(
+            extract_error_message(r#"{"message":"bad key"}"#),
+            "bad key"
+        );
+        assert_eq!(
+            extract_error_message("plain text failure"),
+            "plain text failure"
+        );
+        assert_eq!(extract_error_message("   "), "No response body was returned.");
     }
 }

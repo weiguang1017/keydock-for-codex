@@ -3,7 +3,7 @@ use serde::Serialize;
 use crate::cli;
 use crate::codex::{self, CodexProfile};
 use crate::store::{KeyRecord, KeydockStore, MetadataUpdate};
-use crate::validate::{trim, validate_key, ValidationResult};
+use crate::validate::{probe_responses_key, trim, validate_key, ValidationResult};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,8 +45,22 @@ pub fn list_keys() -> Result<Vec<KeyRecord>, String> {
 }
 
 #[tauri::command]
-pub fn test_draft_key(base_url: Option<String>, api_key: String) -> ValidationResult {
-    validate_key(api_key, base_url.as_deref())
+pub fn test_draft_key(
+    id: Option<String>,
+    base_url: Option<String>,
+    api_key: String,
+) -> ValidationResult {
+    // In the edit dialog the API key field may be left blank to keep the current
+    // key — fall back to the stored secret so detection still works.
+    let mut key = trim(&api_key);
+    if key.is_empty() {
+        if let Some(id) = id.as_ref() {
+            if let Ok(secret) = KeydockStore::default().secret(id) {
+                key = secret;
+            }
+        }
+    }
+    validate_key(key, base_url.as_deref())
 }
 
 #[tauri::command]
@@ -91,16 +105,25 @@ pub fn update_metadata(
     label: Option<String>,
     base_url: Option<String>,
     model: Option<String>,
+    api_key: Option<String>,
 ) -> Result<KeyRecord, String> {
-    KeydockStore::default().update_metadata(
-        id,
-        MetadataUpdate {
-            label,
-            base_url,
-            model,
-            ..MetadataUpdate::default()
-        },
-    )
+    let store = KeydockStore::default();
+    let mut update = MetadataUpdate {
+        label,
+        base_url,
+        model,
+        ..MetadataUpdate::default()
+    };
+    // When a new API key is supplied, replace the stored secret and force a
+    // re-check. Leaving the field blank keeps the existing key untouched.
+    if let Some(api_key) = api_key {
+        if !trim(&api_key).is_empty() {
+            store.set_secret(&id, &api_key)?;
+            update.available = Some(false);
+            update.validation_message = Some("Key changed. Check it again.".to_string());
+        }
+    }
+    store.update_metadata(id, update)
 }
 
 #[tauri::command]
@@ -114,7 +137,20 @@ pub fn validate_key_cmd(id: String) -> Result<ValidationResult, String> {
     let store = KeydockStore::default();
     let api_key = store.secret(&id)?;
     let record = store.list()?.into_iter().find(|item| item.id == id);
-    let check = validate_key(api_key, record.as_ref().map(|item| item.base_url.as_str()));
+    let base_url = record.as_ref().map(|item| item.base_url.clone());
+    let model = record
+        .as_ref()
+        .map(|item| {
+            if trim(&item.model).is_empty() {
+                item.models.first().cloned().unwrap_or_default()
+            } else {
+                item.model.clone()
+            }
+        })
+        .unwrap_or_default();
+    // Probe the real /responses endpoint so availability reflects what Codex
+    // actually does, not just whether /models can be listed.
+    let check = probe_responses_key(&api_key, base_url.as_deref(), &model);
     store.mark_validation(id, &check)?;
     Ok(check)
 }
@@ -128,11 +164,8 @@ pub fn switch_key(id: String) -> Result<SwitchResult, String> {
         .into_iter()
         .find(|item| item.id == id)
         .ok_or_else(|| "Key not found.".to_string())?;
-    let check = validate_key(&api_key, Some(&record.base_url));
-    if !check.valid {
-        return Err(check.message);
-    }
-    store.mark_validation(&id, &check)?;
+    // Apply the config directly. Availability is checked separately via the
+    // card "Check" action — a transient upstream error must not block switching.
     codex::apply_codex_profile(
         None,
         &api_key,
@@ -145,7 +178,7 @@ pub fn switch_key(id: String) -> Result<SwitchResult, String> {
     let mut warning = String::new();
     let codex_path = cli::find_codex_path().ok();
     match cli::restart_codex_desktop(codex_path.as_ref()) {
-        Ok(()) => restarted = true,
+        Ok(did_restart) => restarted = did_restart,
         Err(error) => warning = error,
     }
     store.mark_active(id)?;
