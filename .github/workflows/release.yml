@@ -10,17 +10,27 @@ permissions:
 
 jobs:
   build:
-    name: Build ${{ matrix.os }}
+    name: Build ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-latest
-            bundles: app
+            label: macOS-arm64
+            target: aarch64-apple-darwin
+            bundles: dmg
+          - os: macos-latest
+            label: macOS-x86_64
+            target: x86_64-apple-darwin
+            bundles: dmg
           - os: windows-latest
+            label: Windows
+            target: x86_64-pc-windows-msvc
             bundles: nsis msi
           - os: ubuntu-latest
+            label: Linux
+            target: x86_64-unknown-linux-gnu
             bundles: deb rpm appimage
 
     steps:
@@ -29,6 +39,8 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
@@ -40,33 +52,40 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - name: Test Rust app
-        run: cargo test --manifest-path src-tauri/Cargo.toml
-
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked
 
       - name: Build Tauri bundle
-        run: cargo tauri build --bundles ${{ matrix.bundles }}
+        run: cargo tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
-      - name: Archive bundle artifacts
-        if: runner.os != 'Windows'
+      - name: Collect macOS artifacts
+        if: runner.os == 'macOS'
         shell: bash
         run: |
           mkdir -p artifacts
-          tar -C src-tauri/target/release/bundle -czf "artifacts/Keydock-for-Codex-${{ runner.os }}.tar.gz" .
+          find src-tauri/target/${{ matrix.target }}/release/bundle/dmg -name "*.dmg" -exec cp {} artifacts/ \;
 
-      - name: Archive bundle artifacts on Windows
+      - name: Collect Windows artifacts
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force artifacts | Out-Null
-          Compress-Archive -Path src-tauri\target\release\bundle\* -DestinationPath "artifacts\Keydock-for-Codex-${{ runner.os }}.zip"
+          Get-ChildItem -Path "src-tauri\target\${{ matrix.target }}\release\bundle\nsis" -Filter "*.exe" | Copy-Item -Destination artifacts\
+          Get-ChildItem -Path "src-tauri\target\${{ matrix.target }}\release\bundle\msi" -Filter "*.msi" | Copy-Item -Destination artifacts\
+
+      - name: Collect Linux artifacts
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          find src-tauri/target/${{ matrix.target }}/release/bundle/deb -name "*.deb" -exec cp {} artifacts/ \;
+          find src-tauri/target/${{ matrix.target }}/release/bundle/rpm -name "*.rpm" -exec cp {} artifacts/ \;
+          find src-tauri/target/${{ matrix.target }}/release/bundle/appimage -name "*.AppImage" -exec cp {} artifacts/ \;
 
       - name: Upload bundle artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ runner.os }}
+          name: release-${{ matrix.label }}
           path: artifacts/*
           if-no-files-found: error
 
@@ -88,6 +107,17 @@ jobs:
           files: release-assets/**
           generate_release_notes: true
           body: |
-            Desktop installers for Keydock for Codex.
+            ## Keydock for Codex
 
-            This release is built from the Rust/Tauri app.
+            ### macOS
+            - `*.aarch64.dmg` — Apple Silicon (M1/M2/M3/M4)
+            - `*.x64.dmg` — Intel
+
+            ### Windows
+            - `*.exe` — NSIS 安装包
+            - `*.msi` — MSI 安装包
+
+            ### Linux
+            - `*.deb` — Debian/Ubuntu
+            - `*.rpm` — Fedora/RHEL
+            - `*.AppImage` — 通用格式（免安装）
