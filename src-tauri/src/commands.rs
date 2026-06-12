@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use crate::cli;
 use crate::codex::{self, CodexProfile};
-use crate::store::{KeyRecord, KeydockStore, MetadataUpdate};
+use crate::store::{ExportBundle, ImportSummary, KeyRecord, KeydockStore, MetadataUpdate};
 use crate::validate::{probe_responses_key, trim, validate_key, ValidationResult};
 
 #[derive(Debug, Clone, Serialize)]
@@ -33,6 +33,8 @@ pub struct Diagnostics {
     pub encryption: String,
     /// True when the Codex desktop client is currently running.
     pub codex_desktop_running: bool,
+    /// True when a Codex CLI process is currently running.
+    pub codex_cli_running: bool,
     /// True when the Codex CLI binary is installed and resolvable.
     pub codex_cli_available: bool,
 }
@@ -58,12 +60,10 @@ pub fn test_draft_key(
     // In the edit dialog the API key field may be left blank to keep the current
     // key — fall back to the stored secret so detection still works.
     let mut key = trim(&api_key);
-    let mut used_stored_secret = false;
     if key.is_empty() {
         if let Some(id) = id.as_ref() {
             if let Ok(secret) = KeydockStore::default().secret(id) {
                 key = secret;
-                used_stored_secret = true;
             }
         }
     }
@@ -74,8 +74,9 @@ pub fn test_draft_key(
     // The `/models` endpoint of many OpenAI-compatible proxies does not actually
     // authenticate the bearer token, so a wrong key still returns 200. Confirm the
     // key with a real authenticated request (`POST /responses`) whenever we have a
-    // model to send. Skip this stricter probe when the key was pulled from storage
-    // unchanged — that secret is already known to work.
+    // model to send. We always run this against the base URL currently in the form
+    // so that changing only the base URL (while keeping the stored key) is still
+    // validated against the new endpoint.
     let chosen_model = trim(model.unwrap_or_default());
     let probe_model = if !chosen_model.is_empty() {
         chosen_model
@@ -83,7 +84,7 @@ pub fn test_draft_key(
         trim(&listing.model)
     };
 
-    if used_stored_secret || probe_model.is_empty() {
+    if probe_model.is_empty() {
         return listing;
     }
 
@@ -134,6 +135,64 @@ pub fn add_key(
 #[tauri::command]
 pub fn update_name(id: String, label: String) -> Result<KeyRecord, String> {
     KeydockStore::default().update_name(id, label)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportFileResult {
+    pub path: String,
+    pub count: usize,
+    pub cancelled: bool,
+}
+
+#[tauri::command]
+pub fn export_keys() -> Result<ExportFileResult, String> {
+    let bundle = KeydockStore::default().export_bundle()?;
+    let count = bundle.keys.len();
+    if count == 0 {
+        return Ok(ExportFileResult {
+            path: String::new(),
+            count: 0,
+            cancelled: false,
+        });
+    }
+    let json = serde_json::to_string_pretty(&bundle).map_err(|error| error.to_string())?;
+    let default_name = format!(
+        "keydock-export-{}.json",
+        chrono::Local::now().format("%Y%m%d-%H%M%S")
+    );
+
+    // Blob downloads do not work inside the Tauri webview, so ask the OS for a
+    // save location (editable default file name). If no dialog mechanism exists
+    // (e.g. a Linux box without zenity), fall back to the Downloads folder.
+    let path = match cli::choose_save_path(&default_name) {
+        Ok(Some(path)) => path,
+        Ok(None) => {
+            return Ok(ExportFileResult {
+                path: String::new(),
+                count,
+                cancelled: true,
+            })
+        }
+        Err(_) => dirs::download_dir()
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(&default_name),
+    };
+
+    std::fs::write(&path, format!("{json}\n")).map_err(|error| error.to_string())?;
+    Ok(ExportFileResult {
+        path: path.display().to_string(),
+        count,
+        cancelled: false,
+    })
+}
+
+#[tauri::command]
+pub fn import_keys(content: String) -> Result<ImportSummary, String> {
+    let bundle: ExportBundle = serde_json::from_str(&content)
+        .map_err(|_| "Could not read this file. Make sure it is a Keydock export.".to_string())?;
+    KeydockStore::default().import_bundle(bundle)
 }
 
 #[tauri::command]
@@ -276,6 +335,7 @@ pub fn diagnostics() -> Diagnostics {
     });
 
     let desktop_running = cli::is_codex_desktop_running();
+    let cli_running = cli::is_codex_cli_running();
 
     match cli::find_codex_path() {
         Ok(path) => {
@@ -296,6 +356,7 @@ pub fn diagnostics() -> Diagnostics {
                 codex_profile: profile,
                 encryption: "local fallback".to_string(),
                 codex_desktop_running: desktop_running,
+                codex_cli_running: cli_running,
                 codex_cli_available: true,
             }
         }
@@ -306,6 +367,7 @@ pub fn diagnostics() -> Diagnostics {
             codex_profile: profile,
             encryption: "local fallback".to_string(),
             codex_desktop_running: desktop_running,
+            codex_cli_running: cli_running,
             codex_cli_available: false,
         },
     }

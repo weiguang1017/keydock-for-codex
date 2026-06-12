@@ -51,6 +51,37 @@ struct SecretPayload {
     value: String,
 }
 
+const EXPORT_KIND: &str = "keydock-export";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportedKey {
+    pub label: String,
+    pub base_url: String,
+    pub api_key: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportBundle {
+    pub kind: String,
+    pub version: u32,
+    #[serde(default)]
+    pub exported_at: String,
+    pub keys: Vec<ExportedKey>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSummary {
+    pub added: usize,
+    pub skipped: usize,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct KeyList {
     keys: Vec<KeyRecord>,
@@ -410,6 +441,120 @@ impl KeydockStore {
         )
     }
 
+    /// Produce a portable, self-contained bundle of every stored key, including
+    /// the plaintext API key so it can be restored on another machine.
+    pub fn export_bundle(&self) -> Result<ExportBundle, String> {
+        let records = self.list()?;
+        let secrets = self.secrets()?;
+        let mut items = Vec::new();
+        for record in &records {
+            // Skip keys whose secret can no longer be revealed rather than failing
+            // the whole export.
+            let api_key = match secrets.secrets.get(&record.id) {
+                Some(payload) => match self.reveal(payload) {
+                    Ok(secret) => secret,
+                    Err(_) => continue,
+                },
+                None => continue,
+            };
+            items.push(ExportedKey {
+                label: record.label.clone(),
+                base_url: record.base_url.clone(),
+                api_key,
+                model: record.model.clone(),
+                models: record.models.clone(),
+            });
+        }
+        Ok(ExportBundle {
+            kind: EXPORT_KIND.to_string(),
+            version: 1,
+            exported_at: now_iso(),
+            keys: items,
+        })
+    }
+
+    /// Import keys from a previously exported bundle. Entries whose API key plus
+    /// base URL already exist are skipped. Returns how many were added and skipped.
+    pub fn import_bundle(&self, bundle: ExportBundle) -> Result<ImportSummary, String> {
+        if bundle.kind != EXPORT_KIND {
+            return Err("Unrecognized file. This is not a Keydock export.".to_string());
+        }
+
+        let mut records = self.list()?;
+        let mut secrets = self.secrets()?;
+
+        // Build a set of existing (api_key, base_url) pairs to de-duplicate.
+        let mut existing: std::collections::HashSet<(String, String)> = records
+            .iter()
+            .filter_map(|record| {
+                secrets
+                    .secrets
+                    .get(&record.id)
+                    .and_then(|payload| self.reveal(payload).ok())
+                    .map(|secret| {
+                        (
+                            secret,
+                            normalize_or_default(&record.base_url).unwrap_or_default(),
+                        )
+                    })
+            })
+            .collect();
+
+        let mut added = 0usize;
+        let mut skipped = 0usize;
+        let timestamp = now_iso();
+
+        for item in bundle.keys {
+            let api_key = trim(&item.api_key);
+            if api_key.is_empty() {
+                skipped += 1;
+                continue;
+            }
+            let base_url = normalize_or_default(&item.base_url)?;
+            if !existing.insert((api_key.clone(), base_url.clone())) {
+                skipped += 1;
+                continue;
+            }
+
+            let models = unique_strings(item.models.clone());
+            let selected_model = if !trim(&item.model).is_empty() {
+                trim(&item.model)
+            } else {
+                models.first().cloned().unwrap_or_default()
+            };
+            let id = Uuid::new_v4().to_string();
+            records.push(KeyRecord {
+                id: id.clone(),
+                label: {
+                    let label = trim(&item.label);
+                    if label.is_empty() {
+                        "Imported key".to_string()
+                    } else {
+                        label
+                    }
+                },
+                base_url,
+                masked_key: mask_key(&api_key),
+                model: selected_model,
+                models,
+                available: false,
+                status_code: 0,
+                validation_message: "Imported. Check the key to verify it.".to_string(),
+                active: false,
+                source: "imported".to_string(),
+                last_validated_at: String::new(),
+                created_at: timestamp.clone(),
+                updated_at: timestamp.clone(),
+            });
+            secrets.secrets.insert(id, self.protect(&api_key));
+            added += 1;
+        }
+
+        self.save_secrets(&secrets)?;
+        self.save_list(records)?;
+        Ok(ImportSummary { added, skipped })
+    }
+
     pub fn mark_active(&self, id: impl AsRef<str>) -> Result<Vec<KeyRecord>, String> {
         let id = id.as_ref();
         let timestamp = now_iso();
@@ -488,6 +633,67 @@ mod tests {
         assert_eq!(store.secret(&record.id).unwrap(), "sk-test-1234567890");
         let metadata = fs::read_to_string(dir.join("keys.json")).unwrap();
         assert!(!metadata.contains("sk-test-1234567890"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn exports_and_reimports_with_dedup() {
+        let src_dir = std::env::temp_dir().join(format!("keydock-export-{}", Uuid::new_v4()));
+        let src = KeydockStore::new(&src_dir);
+        src.add(
+            "Work",
+            "https://api.example.com/v1",
+            "sk-aaa-1111111111",
+            &ValidationResult::ok("ok", vec!["gpt-a".to_string()]),
+        )
+        .unwrap();
+        src.add(
+            "Home",
+            "https://api.example.org/v1",
+            "sk-bbb-2222222222",
+            &ValidationResult::ok("ok", vec![]),
+        )
+        .unwrap();
+
+        let bundle = src.export_bundle().unwrap();
+        assert_eq!(bundle.kind, EXPORT_KIND);
+        assert_eq!(bundle.keys.len(), 2);
+        // Plaintext keys are present so they can be restored elsewhere.
+        assert!(bundle.keys.iter().any(|k| k.api_key == "sk-aaa-1111111111"));
+
+        // Round-trip through JSON like the command layer does.
+        let json = serde_json::to_string(&bundle).unwrap();
+        let parsed: ExportBundle = serde_json::from_str(&json).unwrap();
+
+        let dst_dir = std::env::temp_dir().join(format!("keydock-import-{}", Uuid::new_v4()));
+        let dst = KeydockStore::new(&dst_dir);
+        let first = dst.import_bundle(parsed.clone()).unwrap();
+        assert_eq!(first.added, 2);
+        assert_eq!(first.skipped, 0);
+        // Importing the same bundle again adds nothing (deduplicated).
+        let second = dst.import_bundle(parsed).unwrap();
+        assert_eq!(second.added, 0);
+        assert_eq!(second.skipped, 2);
+
+        let restored = dst.list().unwrap();
+        let work = restored.iter().find(|r| r.label == "Work").unwrap();
+        assert_eq!(dst.secret(&work.id).unwrap(), "sk-aaa-1111111111");
+
+        let _ = fs::remove_dir_all(src_dir);
+        let _ = fs::remove_dir_all(dst_dir);
+    }
+
+    #[test]
+    fn rejects_foreign_import_payload() {
+        let dir = std::env::temp_dir().join(format!("keydock-foreign-{}", Uuid::new_v4()));
+        let store = KeydockStore::new(&dir);
+        let bundle = ExportBundle {
+            kind: "something-else".to_string(),
+            version: 1,
+            exported_at: String::new(),
+            keys: vec![],
+        };
+        assert!(store.import_bundle(bundle).is_err());
         let _ = fs::remove_dir_all(dir);
     }
 }

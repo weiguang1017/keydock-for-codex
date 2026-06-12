@@ -18,6 +18,8 @@ if (!window.keydock && typeof tauriInvoke === 'function') {
       validation
     }),
     updateName: ({ id, label }) => tauriInvoke('update_name', { id, label }),
+    exportKeys: () => tauriInvoke('export_keys'),
+    importKeys: ({ content }) => tauriInvoke('import_keys', { content }),
     updateMetadata: ({ id, label, baseUrl, model, apiKey }) => tauriInvoke('update_metadata', {
       id,
       label,
@@ -40,6 +42,14 @@ const translations = {
   en: {
     appSubtitle: 'for Codex',
     addApiKey: 'Add API key',
+    importKeys: 'Import',
+    exportKeys: 'Export',
+    exportEmpty: 'No keys to export.',
+    exportDone: 'Exported {count} key(s) to {path}',
+    exportCancelled: 'Export cancelled.',
+    exportFailed: 'Export failed: {message}',
+    importDone: 'Imported {added} key(s), skipped {skipped}.',
+    importFailed: 'Import failed: {message}',
     noKeys: 'No keys yet.',
     emptyTitle: 'Add your first key',
     emptyHint: 'No saved keys were found. Add one to start switching quickly.',
@@ -78,7 +88,8 @@ const translations = {
     available: 'Available',
     activeInCodex: 'Active in Codex',
     activeInCodexApp: 'In use · Codex app running',
-    activeInCodexCli: 'In use · Codex CLI',
+    activeInCodexCli: 'In use · Codex CLI running',
+    activeInCodexBoth: 'In use · Codex app + CLI running',
     activeInCodexConfig: 'In use · written to config',
     notChecked: 'Not checked',
     noModels: 'No models reported yet',
@@ -129,6 +140,14 @@ const translations = {
   zh: {
     appSubtitle: 'for Codex',
     addApiKey: '添加 Key',
+    importKeys: '导入',
+    exportKeys: '导出',
+    exportEmpty: '没有可导出的 Key。',
+    exportDone: '已导出 {count} 个 Key 到 {path}',
+    exportCancelled: '已取消导出。',
+    exportFailed: '导出失败：{message}',
+    importDone: '已导入 {added} 个，跳过 {skipped} 个。',
+    importFailed: '导入失败：{message}',
     noKeys: '还没有 Key。',
     emptyTitle: '添加第一个 Key',
     emptyHint: '当前没有已保存的 Key，先添加一个，后面切换会轻松很多。',
@@ -166,8 +185,9 @@ const translations = {
     unavailable: '不可用',
     available: '可用',
     activeInCodex: 'Codex 当前使用',
-    activeInCodexApp: '使用中 · 已检测到 Codex 应用运行',
-    activeInCodexCli: '使用中 · Codex CLI',
+    activeInCodexApp: '使用中 · Codex 应用运行中',
+    activeInCodexCli: '使用中 · Codex CLI 运行中',
+    activeInCodexBoth: '使用中 · Codex 应用 + CLI 运行中',
     activeInCodexConfig: '使用中 · 已写入配置',
     notChecked: '未检查',
     noModels: '还没有返回模型',
@@ -218,6 +238,14 @@ const translations = {
   ja: {
     appSubtitle: 'for Codex',
     addApiKey: 'APIキーを追加',
+    importKeys: 'インポート',
+    exportKeys: 'エクスポート',
+    exportEmpty: 'エクスポートする Key がありません。',
+    exportDone: '{count} 件を {path} にエクスポートしました。',
+    exportCancelled: 'エクスポートをキャンセルしました。',
+    exportFailed: 'エクスポート失敗：{message}',
+    importDone: '{added} 件をインポート、{skipped} 件をスキップしました。',
+    importFailed: 'インポート失敗：{message}',
     noKeys: 'キーはまだありません。',
     emptyTitle: '最初のキーを追加',
     emptyHint: '保存済みキーがありません。まず 1 つ追加すると切り替えが楽になります。',
@@ -256,7 +284,8 @@ const translations = {
     available: '利用可能',
     activeInCodex: 'Codex で使用中',
     activeInCodexApp: '使用中 · Codex アプリ起動中',
-    activeInCodexCli: '使用中 · Codex CLI',
+    activeInCodexCli: '使用中 · Codex CLI 実行中',
+    activeInCodexBoth: '使用中 · Codex アプリ + CLI 実行中',
     activeInCodexConfig: '使用中 · 設定に書き込み済み',
     notChecked: '未確認',
     noModels: 'モデルはまだ取得されていません',
@@ -386,12 +415,14 @@ function keyStatus(key) {
 }
 
 // Describe where the active key is currently consumed, based on which Codex
-// surface is detected on this machine.
+// surfaces are actually running on this machine. Falls back to "written to
+// config" when nothing is detected running.
 function activeUsageLabel() {
-  const running = codexInfo?.codexDesktopRunning;
-  const cli = codexInfo?.codexCliAvailable;
-  if (running) return t('activeInCodexApp');
-  if (cli) return t('activeInCodexCli');
+  const appRunning = !!codexInfo?.codexDesktopRunning;
+  const cliRunning = !!codexInfo?.codexCliRunning;
+  if (appRunning && cliRunning) return t('activeInCodexBoth');
+  if (appRunning) return t('activeInCodexApp');
+  if (cliRunning) return t('activeInCodexCli');
   return t('activeInCodexConfig');
 }
 
@@ -565,6 +596,53 @@ async function withAction(message, action) {
   } catch (error) {
     $('message').textContent = error.message || t('actionFailed');
     return null;
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function exportKeysToFile() {
+  if (!requireBridge()) return;
+  try {
+    setBusy(true, t('exportKeys'));
+    // The backend writes the file into the Downloads folder directly because
+    // blob downloads do not work inside the Tauri webview.
+    const result = await window.keydock.exportKeys();
+    if (!result || result.count === 0) {
+      $('message').textContent = t('exportEmpty');
+      return;
+    }
+    if (result.cancelled) {
+      $('message').textContent = t('exportCancelled');
+      return;
+    }
+    $('message').textContent = t('exportDone', { count: result.count, path: result.path });
+  } catch (error) {
+    $('message').textContent = t('exportFailed', { message: error.message || error });
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function importKeysFromFile(event) {
+  const input = event.target;
+  const file = input.files && input.files[0];
+  // Reset so selecting the same file again still fires `change`.
+  input.value = '';
+  if (!file) return;
+  if (!requireBridge()) return;
+  try {
+    setBusy(true, t('importKeys'));
+    const content = await file.text();
+    const summary = await window.keydock.importKeys({ content });
+    await refresh();
+    await loadDiagnostics();
+    $('message').textContent = t('importDone', {
+      added: summary?.added ?? 0,
+      skipped: summary?.skipped ?? 0
+    });
+  } catch (error) {
+    $('message').textContent = t('importFailed', { message: error.message || error });
   } finally {
     setBusy(false);
   }
@@ -997,6 +1075,9 @@ $('searchField').addEventListener('input', () => {
 
 $('addButton').addEventListener('click', openAddDialog);
 $('emptyAddButton').addEventListener('click', openAddDialog);
+$('exportButton').addEventListener('click', exportKeysToFile);
+$('importButton').addEventListener('click', () => $('importFileInput').click());
+$('importFileInput').addEventListener('change', importKeysFromFile);
 $('cancelAdd').addEventListener('click', () => $('addDialog').close());
 $('cancelEdit').addEventListener('click', () => {
   $('editDialog').close();

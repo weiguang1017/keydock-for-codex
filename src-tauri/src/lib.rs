@@ -16,6 +16,8 @@ pub fn run() {
             commands::test_draft_key,
             commands::add_key,
             commands::update_name,
+            commands::export_keys,
+            commands::import_keys,
             commands::update_metadata,
             commands::delete_key,
             commands::validate_key_cmd,

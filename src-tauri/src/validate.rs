@@ -279,7 +279,19 @@ pub fn validate_key(api_key: impl AsRef<str>, base_url: Option<&str>) -> Validat
     }
 
     match status {
-        200 => ValidationResult::ok("The platform accepted this key.", models),
+        // CDN-fronted proxies can answer HTTP 200 with an HTML page or an embedded
+        // JSON error for any path, so a 200 alone is not proof of a working endpoint.
+        200 => match serde_json::from_str::<Value>(&body) {
+            Err(_) => ValidationResult::fail(
+                200,
+                "The Base URL did not return an API response (likely an HTML page). Check the Base URL.",
+                Vec::new(),
+            ),
+            Ok(value) if value.get("error").map(|e| !e.is_null()).unwrap_or(false) => {
+                ValidationResult::fail(200, extract_error_message(&body), models)
+            }
+            Ok(_) => ValidationResult::ok("The platform accepted this key.", models),
+        },
         401 => ValidationResult::fail(401, "The platform rejected this key.", models),
         403 => ValidationResult::fail(
             403,
@@ -357,13 +369,53 @@ pub fn probe_responses_key(
     let body = response.text().unwrap_or_default();
 
     if (200..300).contains(&status) {
-        let mut result =
-            ValidationResult::ok(format!("Model responded successfully (HTTP {status})."), Vec::new());
-        result.model = model;
-        result
+        match assess_responses_body(&body) {
+            Ok(()) => {
+                let mut result = ValidationResult::ok(
+                    format!("Model responded successfully (HTTP {status})."),
+                    Vec::new(),
+                );
+                result.model = model;
+                result
+            }
+            Err(message) => ValidationResult::fail(status, format!("HTTP {status}: {message}"), Vec::new()),
+        }
     } else {
         let detail = extract_error_message(&body);
         ValidationResult::fail(status, format!("HTTP {status}: {detail}"), Vec::new())
+    }
+}
+
+/// Check that a 2xx body from `/responses` is actually a successful model
+/// response. CDN-fronted proxies often answer HTTP 200 with an HTML page (for any
+/// path) or with a JSON body that embeds an error such as "insufficient balance".
+/// Neither must count as a working key.
+pub fn assess_responses_body(body: &str) -> Result<(), String> {
+    let trimmed = trim(body);
+    let value: Value = serde_json::from_str(&trimmed).map_err(|_| {
+        "The endpoint returned a non-API response (likely an HTML page). Check the Base URL."
+            .to_string()
+    })?;
+    if value.get("error").map(|e| !e.is_null()).unwrap_or(false) {
+        return Err(extract_error_message(&trimmed));
+    }
+    let looks_like_response = value.get("object").and_then(Value::as_str) == Some("response")
+        || value.get("output").is_some()
+        || value.get("output_text").is_some()
+        // Tolerate proxies that answer in chat-completions shape.
+        || value.get("choices").is_some()
+        || value
+            .get("id")
+            .and_then(Value::as_str)
+            .map(|id| id.starts_with("resp"))
+            .unwrap_or(false);
+    if looks_like_response {
+        Ok(())
+    } else {
+        Err(
+            "The endpoint accepted the request but did not return a model response. Check the Base URL."
+                .to_string(),
+        )
     }
 }
 
@@ -382,6 +434,27 @@ mod tests {
             model_endpoint("https://api.example.com/v1").unwrap().to_string(),
             "https://api.example.com/v1/models"
         );
+    }
+
+    #[test]
+    fn judges_responses_bodies() {
+        // Real Responses API success shapes pass.
+        assert!(assess_responses_body(r#"{"id":"resp_123","object":"response","output":[]}"#).is_ok());
+        assert!(assess_responses_body(r#"{"output_text":"pong"}"#).is_ok());
+        // Chat-completions style proxies are tolerated.
+        assert!(assess_responses_body(r#"{"id":"chatcmpl-1","choices":[]}"#).is_ok());
+        // HTML page (CDN catch-all) fails even on HTTP 200.
+        assert!(assess_responses_body("<!doctype html><html>welcome</html>").is_err());
+        // Embedded JSON error fails and surfaces the message.
+        let err = assess_responses_body(
+            r#"{"error":{"message":"Insufficient account balance"}}"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("Insufficient account balance"));
+        // JSON that is not a model response fails.
+        assert!(assess_responses_body(r#"{"status":"ok"}"#).is_err());
+        // Empty body fails.
+        assert!(assess_responses_body("").is_err());
     }
 
     #[test]
