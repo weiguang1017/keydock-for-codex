@@ -85,6 +85,16 @@ src-tauri/target/release/bundle/
 
 构建结果在 GitHub 仓库的 `Actions` 页面下载。打 tag（例如 `v1.0.1`）会触发 release workflow，并把 Tauri bundle 产物上传到 GitHub Release。
 
+### macOS 首次打开（未签名应用）
+
+项目没有 Apple 付费开发者账号，发布的 macOS `.dmg` 未做签名和公证，首次打开会被 Gatekeeper 拦截（提示"已损坏"或"无法验证开发者"）。这是 Apple 的限制，与构建配置无关。将 App 拖入「应用程序」后，在终端执行一次即可正常打开：
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/Keydock for Codex.app"
+```
+
+之后可正常双击。也可以在「系统设置 → 隐私与安全性」中，对被拦截的提示点「仍要打开」。
+
 ## English
 
 Keydock for Codex is a Rust/Tauri desktop API key manager for Codex. It is built for users who switch between multiple accounts, projects, or quota pools.
@@ -167,3 +177,13 @@ Pushes to `main` and pull requests run GitHub Actions on macOS, Windows, and Lin
 - `cargo tauri build --bundles app` on macOS, or the matching Tauri bundle target for each platform
 
 Artifacts are available from the repository's `Actions` page. Tags such as `v1.0.1` trigger the release workflow and upload Tauri bundle outputs to GitHub Release.
+
+### Opening on macOS (Unsigned App)
+
+This project has no paid Apple Developer account, so the published macOS `.dmg` is not signed or notarized. On first launch macOS Gatekeeper blocks it ("app is damaged" or "cannot verify developer"). This is an Apple restriction and cannot be fixed through build configuration. After dragging the app into `Applications`, run this once in a terminal:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/Keydock for Codex.app"
+```
+
+The app then opens normally on double-click. Alternatively, go to System Settings → Privacy & Security and click "Open Anyway" on the blocked prompt.
