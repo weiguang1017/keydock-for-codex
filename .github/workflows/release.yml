@@ -113,14 +113,16 @@ jobs:
             - `*.aarch64.dmg` — Apple Silicon (M1/M2/M3/M4)
             - `*.x64.dmg` — Intel
 
-            > ⚠️ 应用未做 Apple 签名/公证，首次打开会被 Gatekeeper 拦截（提示"已损坏"或"无法验证开发者"）。
-            > 将 App 拖入「应用程序」后，在终端执行下面这行即可打开，之后可正常双击：
+            > ⚠️ 应用未做 Apple 签名/公证，首次打开会被 Gatekeeper 拦截（提示"已损坏"或"无法验证开发者"）。这是 Apple 对未公证应用的限制，应用本身是安全的。
+            > macOS 15 (Sequoia) 起常常**直接报"已损坏"且不给「仍要打开」按钮**，请用下面的命令解除隔离：
+            >
+            > 将 App 拖入「应用程序」后，在终端执行一次（之后可正常双击）：
             >
             > ```sh
             > xattr -dr com.apple.quarantine "/Applications/Keydock for Codex.app"
             > ```
             >
-            > 或：系统设置 → 隐私与安全性 → 在被拦截的提示下点「仍要打开」。
+            > 也可下载仓库 `scripts/macos-open.command` 双击运行（自动解除隔离并打开）。详见 README「macOS 首次打开」。
 
             ### Windows
             - `*.exe` — NSIS 安装包

@@ -87,13 +87,23 @@ src-tauri/target/release/bundle/
 
 ### macOS 首次打开（未签名应用）
 
-项目没有 Apple 付费开发者账号，发布的 macOS `.dmg` 未做签名和公证，首次打开会被 Gatekeeper 拦截（提示"已损坏"或"无法验证开发者"）。这是 Apple 的限制，与构建配置无关。将 App 拖入「应用程序」后，在终端执行一次即可正常打开：
+项目没有 Apple 付费开发者账号，发布的 macOS `.dmg` 未做签名和公证。从网络下载的应用会被系统打上「隔离（quarantine）」标记，首次打开被 Gatekeeper 拦截（提示"已损坏"或"无法验证开发者"）。**这是 Apple 对未公证应用的限制，与应用本身无关，应用是安全的。**
+
+> 注意：macOS 15 (Sequoia) 起，对带隔离标记的未公证应用，常常**直接报"已损坏"且不再提供「仍要打开」按钮**，「右键 → 打开」的旧绕过方式也已失效。此时只能用下面的方法解除隔离。
+
+**方法一（推荐，一行命令）**：先把 App 拖入「应用程序」，再在终端执行一次：
 
 ```sh
 xattr -dr com.apple.quarantine "/Applications/Keydock for Codex.app"
 ```
 
-之后可正常双击。也可以在「系统设置 → 隐私与安全性」中，对被拦截的提示点「仍要打开」。
+之后即可正常双击打开。
+
+**方法二（一键脚本）**：下载仓库里的 [`scripts/macos-open.command`](scripts/macos-open.command)，双击运行——它会自动定位 App、解除隔离并打开。若双击脚本本身也被拦截，在终端执行 `bash 路径/macos-open.command` 即可。
+
+**方法三（图形界面）**：双击 App 被拦截后，打开「系统设置 → 隐私与安全性」，下滑找到对应提示点「仍要打开」（仅在系统提供该按钮时可用）。
+
+> 想彻底免提示打开，需要用 Apple Developer ID 证书签名并公证（付费开发者账号 $99/年），届时可在 release workflow 中接入自动签名+公证。
 
 ## English
 

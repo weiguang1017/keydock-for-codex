@@ -34,6 +34,9 @@
     ],
     "category": "DeveloperTool",
     "shortDescription": "Check and switch Codex API keys.",
-    "longDescription": "Keydock for Codex is a lightweight desktop manager for checking and switching Codex API keys stored in ~/.codex."
+    "longDescription": "Keydock for Codex is a lightweight desktop manager for checking and switching Codex API keys stored in ~/.codex.",
+    "macOS": {
+      "signingIdentity": "-"
+    }
   }
 }
