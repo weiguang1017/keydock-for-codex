@@ -211,7 +211,11 @@ pub fn is_codex_cli_running() -> bool {
         Command::new("tasklist.exe")
             .args(["/FI", "IMAGENAME eq codex.exe", "/NH"])
             .output()
-            .map(|output| String::from_utf8_lossy(&output.stdout).to_lowercase().contains("codex.exe"))
+            .map(|output| {
+                String::from_utf8_lossy(&output.stdout)
+                    .to_lowercase()
+                    .contains("codex.exe")
+            })
             .unwrap_or(false)
     }
 
@@ -228,23 +232,21 @@ pub fn is_codex_cli_running() -> bool {
             .args(["-fl", "codex"])
             .output()
             .map(|output| {
-                String::from_utf8_lossy(&output.stdout)
-                    .lines()
-                    .any(|line| {
-                        let lower = line.to_lowercase();
-                        // Skip the desktop app process and our own manager process.
-                        if lower.contains("codex.app")
-                            || lower.contains("keydock")
-                            || lower.contains("codex helper")
-                        {
-                            return false;
-                        }
-                        // Match an invocation whose executable is literally `codex`.
-                        line.split_whitespace().nth(1).map_or(false, |cmd| {
-                            let name = cmd.rsplit('/').next().unwrap_or(cmd);
-                            name == "codex" || name.starts_with("codex")
-                        })
+                String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+                    let lower = line.to_lowercase();
+                    // Skip the desktop app process and our own manager process.
+                    if lower.contains("codex.app")
+                        || lower.contains("keydock")
+                        || lower.contains("codex helper")
+                    {
+                        return false;
+                    }
+                    // Match an invocation whose executable is literally `codex`.
+                    line.split_whitespace().nth(1).map_or(false, |cmd| {
+                        let name = cmd.rsplit('/').next().unwrap_or(cmd);
+                        name == "codex" || name.starts_with("codex")
                     })
+                })
             })
             .unwrap_or(false)
     }
@@ -276,7 +278,9 @@ pub fn restart_codex_desktop(_codex_path: Option<&PathBuf>) -> Result<bool, Stri
 
     #[cfg(target_os = "windows")]
     {
-        let _ = Command::new("taskkill.exe").args(["/IM", "Codex.exe"]).output();
+        let _ = Command::new("taskkill.exe")
+            .args(["/IM", "Codex.exe"])
+            .output();
     }
 
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
@@ -291,7 +295,9 @@ pub fn restart_codex_desktop(_codex_path: Option<&PathBuf>) -> Result<bool, Stri
         // Graceful quit did not finish in time — force-terminate, then wait again.
         #[cfg(target_os = "macos")]
         {
-            let _ = Command::new("/usr/bin/pkill").args(["-x", "Codex"]).output();
+            let _ = Command::new("/usr/bin/pkill")
+                .args(["-x", "Codex"])
+                .output();
         }
         #[cfg(target_os = "windows")]
         {
@@ -317,7 +323,10 @@ pub fn restart_codex_desktop(_codex_path: Option<&PathBuf>) -> Result<bool, Stri
             return Ok(true);
         }
     }
-    Err("Codex was closed but could not be relaunched automatically. Start it manually.".to_string())
+    Err(
+        "Codex was closed but could not be relaunched automatically. Start it manually."
+            .to_string(),
+    )
 }
 
 /// Poll `condition` every 250 ms until it returns true or `timeout` elapses.

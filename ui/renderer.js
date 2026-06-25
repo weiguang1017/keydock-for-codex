@@ -2,6 +2,7 @@ let keys = [];
 let busy = false;
 let filterText = '';
 let draftValidation = null;
+let editValidation = null;
 let editingId = null;
 let codexInfo = null;
 
@@ -20,12 +21,13 @@ if (!window.keydock && typeof tauriInvoke === 'function') {
     updateName: ({ id, label }) => tauriInvoke('update_name', { id, label }),
     exportKeys: () => tauriInvoke('export_keys'),
     importKeys: ({ content }) => tauriInvoke('import_keys', { content }),
-    updateMetadata: ({ id, label, baseUrl, model, apiKey }) => tauriInvoke('update_metadata', {
+    updateMetadata: ({ id, label, baseUrl, model, apiKey, validation }) => tauriInvoke('update_metadata', {
       id,
       label,
       baseUrl,
       model,
-      apiKey
+      apiKey,
+      validation
     }),
     deleteKey: ({ id }) => tauriInvoke('delete_key', { id }),
     validateKey: ({ id }) => tauriInvoke('validate_key_cmd', { id }),
@@ -37,6 +39,13 @@ if (!window.keydock && typeof tauriInvoke === 'function') {
 const STORAGE_LANGUAGE_KEY = 'keydock.language';
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const SUPPORTED_LANGUAGES = ['en', 'zh', 'ja'];
+const CLIENT_OPTIONS = [
+  { id: 'codex', label: 'Codex', icon: './assets/clients/codex.png' },
+  { id: 'openclaw', label: 'OpenClaw', icon: './assets/clients/openclaw.png' },
+  { id: 'hermes', label: 'Hermes', icon: './assets/clients/hermes.png' }
+];
+
+const clientFilters = new Set();
 
 const translations = {
   en: {
@@ -57,6 +66,7 @@ const translations = {
     modelsBadge: '{count} models',
     currentActive: 'Current key',
     allKeys: 'All keys',
+    filterByClient: 'Filter keys by supported client',
     activeFromConfig: 'Detected from ~/.codex',
     noActiveTitle: 'No Codex key configured',
     language: 'Language',
@@ -72,6 +82,7 @@ const translations = {
     maskedKey: 'Masked key',
     model: 'Model',
     models: 'Models',
+    supportedClients: 'Supported clients',
     status: 'Status',
     lastChecked: 'Last checked',
     save: 'Save',
@@ -155,6 +166,7 @@ const translations = {
     modelsBadge: '{count} 个模型',
     currentActive: '当前生效',
     allKeys: '所有 Key',
+    filterByClient: '按支持的客户端过滤 Key',
     activeFromConfig: '来自 ~/.codex',
     noActiveTitle: '尚未配置 Codex Key',
     language: '语言',
@@ -170,6 +182,7 @@ const translations = {
     maskedKey: '隐藏后的 Key',
     model: '模型',
     models: '模型',
+    supportedClients: '支持的客户端',
     status: '状态',
     lastChecked: '上次检查',
     save: '保存',
@@ -253,6 +266,7 @@ const translations = {
     modelsBadge: '{count} 個のモデル',
     currentActive: '現在のキー',
     allKeys: 'すべてのキー',
+    filterByClient: '対応クライアントでキーを絞り込み',
     activeFromConfig: '~/.codex から検出',
     noActiveTitle: 'Codex キーが未設定です',
     language: '言語',
@@ -268,6 +282,7 @@ const translations = {
     maskedKey: 'マスク済みキー',
     model: 'モデル',
     models: 'モデル',
+    supportedClients: '対応クライアント',
     status: '状態',
     lastChecked: '最終確認',
     save: '保存',
@@ -374,6 +389,71 @@ function escapeHtml(value) {
     .replaceAll('"', '&quot;');
 }
 
+function normalizeClientIds(values, fallback = []) {
+  const allowed = new Set(CLIENT_OPTIONS.map((option) => option.id));
+  const seen = new Set();
+  const source = Array.isArray(values) ? values : fallback;
+  const normalized = [];
+  for (const value of source) {
+    const id = String(value || '').trim().toLowerCase();
+    if (!allowed.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    normalized.push(id);
+  }
+  return normalized;
+}
+
+function clientOption(id) {
+  return CLIENT_OPTIONS.find((option) => option.id === id) || null;
+}
+
+function clientIdsForKey(key) {
+  if (!String(key?.clientSupportCheckedAt || '').trim()) return [];
+  const ids = normalizeClientIds(key?.supportedClients);
+  return ids;
+}
+
+function renderClientIcons(values) {
+  const ids = normalizeClientIds(values);
+  if (ids.length === 0) return '';
+  const icons = ids
+    .map((id) => {
+      const option = clientOption(id);
+      if (!option) return '';
+      return `<span class="client-icon ${escapeHtml(option.id)}" title="${escapeHtml(option.label)}" aria-label="${escapeHtml(option.label)}"><img src="${escapeHtml(option.icon)}" alt="" aria-hidden="true"></span>`;
+    })
+    .join('');
+  const labels = ids.map((id) => clientOption(id)?.label).filter(Boolean).join(', ');
+  return `<div class="client-icons" aria-label="${escapeHtml(t('supportedClients'))}: ${escapeHtml(labels)}">${icons}</div>`;
+}
+
+function renderClientFilterBar() {
+  const bar = $('clientFilterBar');
+  if (!bar) return;
+  const allButton = $('allKeysFilter');
+  if (allButton) {
+    const allSelected = clientFilters.size === 0;
+    allButton.classList.toggle('selected', allSelected);
+    allButton.setAttribute('aria-pressed', allSelected ? 'true' : 'false');
+  }
+  bar.setAttribute('aria-label', t('filterByClient'));
+  bar.innerHTML = CLIENT_OPTIONS.map((option) => {
+    const selected = clientFilters.has(option.id);
+    return `
+      <button
+        type="button"
+        class="client-filter-btn${selected ? ' selected' : ''}"
+        data-client="${escapeHtml(option.id)}"
+        aria-pressed="${selected ? 'true' : 'false'}"
+        title="${escapeHtml(option.label)}"
+        aria-label="${escapeHtml(option.label)}"
+      >
+        <img src="${escapeHtml(option.icon)}" alt="" aria-hidden="true">
+      </button>
+    `;
+  }).join('');
+}
+
 function applyStaticText() {
   document.documentElement.lang = currentLanguage();
   document.querySelectorAll('[data-i18n]').forEach((node) => {
@@ -444,6 +524,7 @@ function renderActiveCard() {
 
   if (active) {
     const modelText = active.model || t('noModels');
+    const clientIcons = renderClientIcons(clientIdsForKey(active));
     card.className = `active-card ok`;
     card.innerHTML = `
       <div class="active-top">
@@ -454,6 +535,7 @@ function renderActiveCard() {
         </div>
         <span class="active-status">${escapeHtml(keyStatus(active))}</span>
       </div>
+      ${clientIcons ? `<div class="active-client-row">${clientIcons}</div>` : ''}
       <div class="active-grid">
         <div><span>${escapeHtml(t('baseUrl'))}</span><code>${escapeHtml(active.baseUrl || DEFAULT_BASE_URL)}</code></div>
         <div><span>${escapeHtml(t('apiKey'))}</span><code>${escapeHtml(active.maskedKey || '-')}</code></div>
@@ -503,10 +585,16 @@ function renderActiveCard() {
 
 function visibleKeys() {
   const query = filterText.trim().toLowerCase();
-  if (!query) return keys;
+  const selectedClients = Array.from(clientFilters);
   return keys.filter((key) => {
+    const ids = clientIdsForKey(key);
+    if (selectedClients.length > 0 && !selectedClients.every((id) => ids.includes(id))) {
+      return false;
+    }
+    if (!query) return true;
     const models = Array.isArray(key.models) ? key.models.join(' ') : '';
-    return [key.label, key.baseUrl, key.maskedKey, key.model, models]
+    const clients = ids.map((id) => clientOption(id)?.label || id).join(' ');
+    return [key.label, key.baseUrl, key.maskedKey, key.model, models, clients]
       .join(' ')
       .toLowerCase()
       .includes(query);
@@ -546,6 +634,7 @@ function renderKeyGrid() {
         <span class="url" title="${escapeHtml(key.baseUrl || '')}">${escapeHtml(key.baseUrl || DEFAULT_BASE_URL)}</span>
         <span class="model">${escapeHtml(key.model || (modelCount ? t('modelsBadge', { count: modelCount }) : '-'))}</span>
       </div>
+      ${renderClientIcons(clientIdsForKey(key))}
       <div class="status-line ${statusClass}">
         <span class="status-text">${escapeHtml(keyStatus(key))}</span>
         ${showDetail ? `<button type="button" class="detail-btn" data-act="detail" title="${escapeHtml(t('detailTitle'))}" aria-label="${escapeHtml(t('detailTitle'))}">&#9432;</button>` : ''}
@@ -563,6 +652,7 @@ function renderKeyGrid() {
 
 function render() {
   applyStaticText();
+  renderClientFilterBar();
   renderActiveCard();
   renderKeyGrid();
 }
@@ -757,7 +847,7 @@ function setModelOptions(input, models, selectedModel) {
 /* ---------- Add dialog ---------- */
 
 function draftFingerprint() {
-  return [$('newBaseUrl').value.trim(), $('newKey').value.trim()].join('\n');
+  return [$('newBaseUrl').value.trim(), $('newKey').value.trim(), $('newModelField').value.trim()].join('\n');
 }
 
 function setAddStatus(text, state = '') {
@@ -806,7 +896,6 @@ async function testDraftKey() {
     setAddStatus(t('missingApiKey'), 'bad');
     return null;
   }
-  const fingerprint = draftFingerprint();
   setAddStatus(t('testingDraft'), 'pending');
   // Probe with exactly what is typed in the form; do not refresh the list (that
   // would trigger a profile sync and is unrelated to testing a draft key).
@@ -819,8 +908,8 @@ async function testDraftKey() {
       setAddStatus(result?.message || t('testFailed'), 'bad');
       return null;
     }
-    draftValidation = { ...result, fingerprint };
     setDraftModels(result.models || [], result.model || '');
+    draftValidation = { ...result, fingerprint: draftFingerprint() };
     const modelCount = Array.isArray(result.models) ? result.models.length : 0;
     setAddStatus(
       modelCount > 0 ? `${t('testPassed')} (${t('modelsBadge', { count: modelCount })})` : t('testPassedNoModels'),
@@ -885,6 +974,19 @@ function setEditStatus(text, state = '') {
   node.className = `dialog-status${state ? ` ${state}` : ''}`;
 }
 
+function editFingerprint() {
+  return [
+    editingId || '',
+    $('editBaseUrl').value.trim(),
+    $('editKey').value.trim(),
+    $('editModelField').value.trim()
+  ].join('\n');
+}
+
+function clearEditValidation() {
+  editValidation = null;
+}
+
 function openEditDialog(id) {
   const key = keys.find((item) => item.id === id);
   if (!key) return;
@@ -895,6 +997,7 @@ function openEditDialog(id) {
   $('editKey').type = 'password';
   updateEditRevealIcon();
   setModelOptions($('editModelField'), key.models, key.model);
+  clearEditValidation();
   setEditStatus('');
   $('editDialog').showModal();
 }
@@ -920,10 +1023,12 @@ async function testEditKey() {
     const model = $('editModelField').value.trim();
     const result = await window.keydock.testDraftKey({ id: editingId, baseUrl, apiKey, model });
     if (!result?.valid) {
+      clearEditValidation();
       setEditStatus(result?.message || t('testFailed'), 'bad');
       return null;
     }
     setModelOptions($('editModelField'), result.models || [], $('editModelField').value || result.model || '');
+    editValidation = { ...result, fingerprint: editFingerprint() };
     const modelCount = Array.isArray(result.models) ? result.models.length : 0;
     setEditStatus(
       modelCount > 0 ? `${t('testPassed')} (${t('modelsBadge', { count: modelCount })})` : t('testPassedNoModels'),
@@ -931,6 +1036,7 @@ async function testEditKey() {
     );
     return result;
   } catch (error) {
+    clearEditValidation();
     setEditStatus(error.message || t('testFailed'), 'bad');
     return null;
   } finally {
@@ -944,17 +1050,22 @@ async function saveEdit() {
   const baseUrl = requireValue('editBaseUrl', 'missingBaseUrl');
   if (!label || !baseUrl) return;
   const apiKey = $('editKey').value.trim();
+  const validation = editValidation?.valid && editValidation.fingerprint === editFingerprint()
+    ? editValidation
+    : undefined;
   const record = await withAction(t('savingDetails'), () => window.keydock.updateMetadata({
     id: editingId,
     label,
     baseUrl,
     model: $('editModelField').value,
-    apiKey: apiKey || undefined
+    apiKey: apiKey || undefined,
+    validation
   }));
   if (!record) return;
   $('message').textContent = record.active ? `${t('detailsSaved')} ${t('cliReminder')}` : t('detailsSaved');
   $('editDialog').close();
   editingId = null;
+  clearEditValidation();
 }
 
 /* ---------- Detail & confirm dialogs ---------- */
@@ -1073,6 +1184,24 @@ $('searchField').addEventListener('input', () => {
   renderKeyGrid();
 });
 
+$('allKeysFilter').addEventListener('click', () => {
+  clientFilters.clear();
+  render();
+});
+
+$('clientFilterBar').addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-client]');
+  if (!button) return;
+  const id = button.dataset.client;
+  if (clientFilters.has(id)) {
+    clientFilters.clear();
+  } else {
+    clientFilters.clear();
+    clientFilters.add(id);
+  }
+  render();
+});
+
 $('addButton').addEventListener('click', openAddDialog);
 $('emptyAddButton').addEventListener('click', openAddDialog);
 $('exportButton').addEventListener('click', exportKeysToFile);
@@ -1082,6 +1211,7 @@ $('cancelAdd').addEventListener('click', () => $('addDialog').close());
 $('cancelEdit').addEventListener('click', () => {
   $('editDialog').close();
   editingId = null;
+  clearEditValidation();
 });
 
 $('validateNewButton').addEventListener('click', () => {
@@ -1110,8 +1240,12 @@ $('detailClose').addEventListener('click', () => {
   $('detailDialog').close();
 });
 
-for (const id of ['newBaseUrl', 'newKey']) {
+for (const id of ['newBaseUrl', 'newKey', 'newModelField']) {
   $(id).addEventListener('input', clearDraftValidation);
+}
+
+for (const id of ['editBaseUrl', 'editKey', 'editModelField']) {
+  $(id).addEventListener('input', clearEditValidation);
 }
 
 $('keyGrid').addEventListener('click', (event) => {
@@ -1182,6 +1316,7 @@ document.addEventListener('click', (event) => {
 });
 
 applyStaticText();
+renderClientFilterBar();
 updateRevealIcon();
 updateEditRevealIcon();
 $('message').textContent = t('footerMessage');

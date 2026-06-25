@@ -271,7 +271,11 @@ pub fn set_toml_value(content: &str, section_path: &[&str], key: &str, value: &s
     let target_key = trim(key);
     let target_section = section_fingerprint(section_path.iter().copied());
     let is_root_target = section_path.is_empty();
-    let newline = if content.contains("\r\n") { "\r\n" } else { "\n" };
+    let newline = if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
     let mut lines = content
         .split_inclusive('\n')
         .map(|line| line.trim_end_matches(['\r', '\n']).to_string())
@@ -328,7 +332,11 @@ pub fn set_toml_value(content: &str, section_path: &[&str], key: &str, value: &s
         return lines.join(newline);
     }
 
-    if lines.last().map(|line| !trim(line).is_empty()).unwrap_or(false) {
+    if lines
+        .last()
+        .map(|line| !trim(line).is_empty())
+        .unwrap_or(false)
+    {
         lines.push(String::new());
     }
     lines.push(format!("[{}]", section_path.join(".")));
@@ -462,7 +470,11 @@ fn split_toml_path(value: &str) -> Vec<String> {
     if !current.is_empty() {
         parts.push(unquote_toml(&current));
     }
-    parts.into_iter().map(trim).filter(|item| !item.is_empty()).collect()
+    parts
+        .into_iter()
+        .map(trim)
+        .filter(|item| !item.is_empty())
+        .collect()
 }
 
 fn parse_toml_value(raw_value: &str) -> Value {
@@ -525,7 +537,9 @@ fn section_fingerprint<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
 }
 
 fn first_string<'a>(values: impl IntoIterator<Item = Option<&'a Value>>) -> Option<String> {
-    values.into_iter().find_map(|value| value.and_then(value_string))
+    values
+        .into_iter()
+        .find_map(|value| value.and_then(value_string))
 }
 
 fn value_string(value: &Value) -> Option<String> {
@@ -548,13 +562,16 @@ fn default_config_template(provider: &str, base_url: &str) -> String {
 
 fn backup_file(path: &Path) {
     if path.exists() {
-        let _ = fs::copy(path, path.with_extension(format!(
-            "{}bak",
-            path.extension()
-                .and_then(|value| value.to_str())
-                .map(|value| format!("{value}."))
-                .unwrap_or_default()
-        )));
+        let _ = fs::copy(
+            path,
+            path.with_extension(format!(
+                "{}bak",
+                path.extension()
+                    .and_then(|value| value.to_str())
+                    .map(|value| format!("{value}."))
+                    .unwrap_or_default()
+            )),
+        );
     }
 }
 
@@ -585,7 +602,10 @@ mod tests {
         let parsed = parse_codex_config(
             "model_provider = \"OpenAI\"\nmodel = \"gpt-5.5\"\n[model_providers.OpenAI]\nbase_url = \"https://cursorvip.com\"\n",
         );
-        assert_eq!(value_string(parsed.root.get("model_provider").unwrap()).unwrap(), "OpenAI");
+        assert_eq!(
+            value_string(parsed.root.get("model_provider").unwrap()).unwrap(),
+            "OpenAI"
+        );
         assert_eq!(
             value_string(
                 parsed

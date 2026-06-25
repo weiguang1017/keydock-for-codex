@@ -8,7 +8,8 @@ use uuid::Uuid;
 
 use crate::codex::CodexProfile;
 use crate::validate::{
-    mask_key, normalize_or_default, trim, unique_strings, ValidationResult,
+    mask_key, normalize_or_default, normalize_supported_clients, trim, unique_strings,
+    ValidationResult,
 };
 use crate::{APP_NAME, DEFAULT_CODEX_PROFILE_LABEL};
 
@@ -21,6 +22,10 @@ pub struct KeyRecord {
     pub masked_key: String,
     pub model: String,
     pub models: Vec<String>,
+    #[serde(default = "default_supported_clients")]
+    pub supported_clients: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub client_support_checked_at: String,
     pub available: bool,
     pub status_code: u16,
     pub validation_message: String,
@@ -42,6 +47,8 @@ pub struct MetadataUpdate {
     pub available: Option<bool>,
     pub status_code: Option<u16>,
     pub validation_message: Option<String>,
+    pub supported_clients: Option<Vec<String>>,
+    pub client_support_checked_at: Option<String>,
     pub last_validated_at: Option<String>,
 }
 
@@ -63,6 +70,10 @@ pub struct ExportedKey {
     pub model: String,
     #[serde(default)]
     pub models: Vec<String>,
+    #[serde(default = "default_supported_clients")]
+    pub supported_clients: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub client_support_checked_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,6 +165,7 @@ impl KeydockStore {
         let mut records = self.list()?;
         let id = Uuid::new_v4().to_string();
         let timestamp = now_iso();
+        let base_url = normalize_or_default(base_url)?;
         let models = unique_strings(validation.models.clone());
         let selected_model = if !trim(&validation.model).is_empty() {
             trim(&validation.model)
@@ -170,10 +182,16 @@ impl KeydockStore {
                     label
                 }
             },
-            base_url: normalize_or_default(base_url)?,
+            base_url: base_url.clone(),
             masked_key: mask_key(&api_key),
             model: selected_model,
             models,
+            supported_clients: normalize_supported_clients(validation.supported_clients.clone()),
+            client_support_checked_at: if validation.supported_clients.is_empty() {
+                String::new()
+            } else {
+                timestamp.clone()
+            },
             available: validation.valid,
             status_code: validation.status_code,
             validation_message: trim(&validation.message),
@@ -192,7 +210,10 @@ impl KeydockStore {
         Ok(record)
     }
 
-    pub fn upsert_codex_profile(&self, profile: &CodexProfile) -> Result<Option<KeyRecord>, String> {
+    pub fn upsert_codex_profile(
+        &self,
+        profile: &CodexProfile,
+    ) -> Result<Option<KeyRecord>, String> {
         if !profile.configured || profile.api_key.is_empty() {
             return Ok(None);
         }
@@ -218,7 +239,11 @@ impl KeydockStore {
                 .unwrap_or(false)
         });
         let fallback_index = matching_index
-            .or_else(|| records.iter().position(|item| item.source == "codex-config"))
+            .or_else(|| {
+                records
+                    .iter()
+                    .position(|item| item.source == "codex-config")
+            })
             .or_else(|| {
                 records.iter().position(|item| {
                     item.masked_key == masked_key
@@ -230,6 +255,9 @@ impl KeydockStore {
         let record_id;
         if let Some(index) = fallback_index {
             let record = &mut records[index];
+            let key_changed = record.masked_key != masked_key;
+            let base_changed = record.base_url != base_url;
+            let model_changed = !selected_model.is_empty() && record.model != selected_model;
             if record.label.is_empty() {
                 record.label = if profile.label.is_empty() {
                     DEFAULT_CODEX_PROFILE_LABEL.to_string()
@@ -243,6 +271,10 @@ impl KeydockStore {
                 record.model = selected_model;
             }
             record.models = unique_strings(models.into_iter().chain(record.models.clone()));
+            if key_changed || base_changed || model_changed {
+                record.supported_clients = Vec::new();
+            }
+            mark_codex_configured(record, &timestamp);
             if !profile.message.is_empty() {
                 record.validation_message = profile.message.clone();
             } else if record.validation_message.is_empty() {
@@ -261,20 +293,22 @@ impl KeydockStore {
                 } else {
                     profile.label.clone()
                 },
-                base_url,
+                base_url: base_url.clone(),
                 masked_key,
                 model: selected_model,
                 models,
-                available: false,
-                status_code: 0,
+                supported_clients: vec!["codex".to_string()],
+                client_support_checked_at: timestamp.clone(),
+                available: true,
+                status_code: 200,
                 validation_message: if profile.message.is_empty() {
-                    "Imported from Codex config.".to_string()
+                    "Codex is configured to use this key.".to_string()
                 } else {
                     profile.message.clone()
                 },
                 active: false,
                 source: "codex-config".to_string(),
-                last_validated_at: String::new(),
+                last_validated_at: timestamp.clone(),
                 created_at: timestamp.clone(),
                 updated_at: timestamp.clone(),
             };
@@ -325,12 +359,21 @@ impl KeydockStore {
                 record.available = false;
                 record.models = Vec::new();
                 record.model = String::new();
+                record.supported_clients = Vec::new();
+                record.client_support_checked_at = String::new();
                 record.validation_message = "Base URL changed. Check the key again.".to_string();
             }
             record.base_url = next_base_url;
         }
         if let Some(model) = updates.model {
-            record.model = trim(model);
+            let next_model = trim(model);
+            if next_model != record.model {
+                record.available = false;
+                record.supported_clients = Vec::new();
+                record.client_support_checked_at = String::new();
+                record.validation_message = "Model changed. Check the key again.".to_string();
+            }
+            record.model = next_model;
         }
         if let Some(models) = updates.models {
             record.models = unique_strings(models);
@@ -344,6 +387,12 @@ impl KeydockStore {
         if let Some(message) = updates.validation_message {
             record.validation_message = trim(message);
         }
+        if let Some(supported_clients) = updates.supported_clients {
+            record.supported_clients = normalize_supported_clients(supported_clients);
+        }
+        if let Some(client_support_checked_at) = updates.client_support_checked_at {
+            record.client_support_checked_at = trim(client_support_checked_at);
+        }
         if let Some(last_validated_at) = updates.last_validated_at {
             record.last_validated_at = last_validated_at;
         }
@@ -353,7 +402,11 @@ impl KeydockStore {
         Ok(record)
     }
 
-    pub fn update_name(&self, id: impl AsRef<str>, label: impl AsRef<str>) -> Result<KeyRecord, String> {
+    pub fn update_name(
+        &self,
+        id: impl AsRef<str>,
+        label: impl AsRef<str>,
+    ) -> Result<KeyRecord, String> {
         self.update_metadata(
             id,
             MetadataUpdate {
@@ -388,11 +441,7 @@ impl KeydockStore {
 
     /// Replace the stored secret for an existing key and refresh its masked
     /// representation. Used when editing a key's API key in place.
-    pub fn set_secret(
-        &self,
-        id: impl AsRef<str>,
-        api_key: impl AsRef<str>,
-    ) -> Result<(), String> {
+    pub fn set_secret(&self, id: impl AsRef<str>, api_key: impl AsRef<str>) -> Result<(), String> {
         let id = id.as_ref();
         let api_key = trim(api_key);
         if api_key.is_empty() {
@@ -404,10 +453,14 @@ impl KeydockStore {
             .find(|item| item.id == id)
             .ok_or_else(|| "Key not found.".to_string())?;
         record.masked_key = mask_key(&api_key);
+        record.supported_clients = Vec::new();
+        record.client_support_checked_at = String::new();
         record.updated_at = now_iso();
 
         let mut secrets = self.secrets()?;
-        secrets.secrets.insert(id.to_string(), self.protect(&api_key));
+        secrets
+            .secrets
+            .insert(id.to_string(), self.protect(&api_key));
         self.save_secrets(&secrets)?;
         self.save_list(records)
     }
@@ -417,6 +470,7 @@ impl KeydockStore {
         id: impl AsRef<str>,
         result: &ValidationResult,
     ) -> Result<KeyRecord, String> {
+        let timestamp = now_iso();
         self.update_metadata(
             id,
             MetadataUpdate {
@@ -435,7 +489,9 @@ impl KeydockStore {
                 } else {
                     Some(result.model.clone())
                 },
-                last_validated_at: Some(now_iso()),
+                supported_clients: Some(result.supported_clients.clone()),
+                client_support_checked_at: Some(timestamp.clone()),
+                last_validated_at: Some(timestamp),
                 ..MetadataUpdate::default()
             },
         )
@@ -463,6 +519,8 @@ impl KeydockStore {
                 api_key,
                 model: record.model.clone(),
                 models: record.models.clone(),
+                supported_clients: record.supported_clients.clone(),
+                client_support_checked_at: record.client_support_checked_at.clone(),
             });
         }
         Ok(ExportBundle {
@@ -533,10 +591,12 @@ impl KeydockStore {
                         label
                     }
                 },
-                base_url,
+                base_url: base_url.clone(),
                 masked_key: mask_key(&api_key),
                 model: selected_model,
                 models,
+                supported_clients: normalize_supported_clients(item.supported_clients),
+                client_support_checked_at: trim(item.client_support_checked_at),
                 available: false,
                 status_code: 0,
                 validation_message: "Imported. Check the key to verify it.".to_string(),
@@ -587,6 +647,33 @@ pub fn now_iso() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
+fn default_supported_clients() -> Vec<String> {
+    Vec::new()
+}
+
+fn mark_codex_configured(record: &mut KeyRecord, timestamp: &str) {
+    let mut clients = record.supported_clients.clone();
+    clients.push("codex".to_string());
+    record.supported_clients = normalize_supported_clients(clients);
+    record.client_support_checked_at = timestamp.to_string();
+    record.available = true;
+    record.status_code = 200;
+    if record.validation_message.is_empty()
+        || record
+            .validation_message
+            .contains("No supported client detected")
+        || record.validation_message.contains("Check the key again")
+        || record
+            .validation_message
+            .contains("Imported from Codex config")
+    {
+        record.validation_message = "Codex is configured to use this key.".to_string();
+    }
+    if record.last_validated_at.is_empty() {
+        record.last_validated_at = timestamp.to_string();
+    }
+}
+
 fn ensure_parent(path: &Path) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -622,15 +709,20 @@ mod tests {
     fn stores_secret_outside_metadata() {
         let dir = std::env::temp_dir().join(format!("keydock-store-{}", Uuid::new_v4()));
         let store = KeydockStore::new(&dir);
+        let mut validation =
+            ValidationResult::ok("ok", vec!["gpt-a".to_string(), "gpt-b".to_string()]);
+        validation.supported_clients = vec!["codex".to_string()];
         let record = store
             .add(
                 "Work",
                 "https://api.example.com/v1",
                 "sk-test-1234567890",
-                &ValidationResult::ok("ok", vec!["gpt-a".to_string(), "gpt-b".to_string()]),
+                &validation,
             )
             .unwrap();
         assert_eq!(store.secret(&record.id).unwrap(), "sk-test-1234567890");
+        assert_eq!(record.supported_clients, vec!["codex"]);
+        assert!(!record.client_support_checked_at.is_empty());
         let metadata = fs::read_to_string(dir.join("keys.json")).unwrap();
         assert!(!metadata.contains("sk-test-1234567890"));
         let _ = fs::remove_dir_all(dir);
@@ -640,11 +732,17 @@ mod tests {
     fn exports_and_reimports_with_dedup() {
         let src_dir = std::env::temp_dir().join(format!("keydock-export-{}", Uuid::new_v4()));
         let src = KeydockStore::new(&src_dir);
+        let mut work_validation = ValidationResult::ok("ok", vec!["gpt-a".to_string()]);
+        work_validation.supported_clients = vec![
+            "codex".to_string(),
+            "openclaw".to_string(),
+            "hermes".to_string(),
+        ];
         src.add(
             "Work",
             "https://api.example.com/v1",
             "sk-aaa-1111111111",
-            &ValidationResult::ok("ok", vec!["gpt-a".to_string()]),
+            &work_validation,
         )
         .unwrap();
         src.add(
@@ -660,6 +758,12 @@ mod tests {
         assert_eq!(bundle.keys.len(), 2);
         // Plaintext keys are present so they can be restored elsewhere.
         assert!(bundle.keys.iter().any(|k| k.api_key == "sk-aaa-1111111111"));
+        let exported_work = bundle.keys.iter().find(|k| k.label == "Work").unwrap();
+        assert_eq!(
+            exported_work.supported_clients,
+            vec!["codex", "openclaw", "hermes"]
+        );
+        assert!(!exported_work.client_support_checked_at.is_empty());
 
         // Round-trip through JSON like the command layer does.
         let json = serde_json::to_string(&bundle).unwrap();
@@ -678,9 +782,68 @@ mod tests {
         let restored = dst.list().unwrap();
         let work = restored.iter().find(|r| r.label == "Work").unwrap();
         assert_eq!(dst.secret(&work.id).unwrap(), "sk-aaa-1111111111");
+        assert_eq!(work.supported_clients, vec!["codex", "openclaw", "hermes"]);
+        assert!(!work.client_support_checked_at.is_empty());
 
         let _ = fs::remove_dir_all(src_dir);
         let _ = fs::remove_dir_all(dst_dir);
+    }
+
+    #[test]
+    fn does_not_infer_supported_clients_without_probe() {
+        let dir = std::env::temp_dir().join(format!("keydock-unchecked-{}", Uuid::new_v4()));
+        let store = KeydockStore::new(&dir);
+        let record = store
+            .add(
+                "Unchecked",
+                "https://api.example.com/v1",
+                "sk-unchecked-111111",
+                &ValidationResult::ok("ok", vec!["gpt-a".to_string()]),
+            )
+            .unwrap();
+        assert!(record.supported_clients.is_empty());
+        assert!(record.client_support_checked_at.is_empty());
+        let listed = store.list().unwrap();
+        assert!(listed[0].supported_clients.is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn marks_codex_profile_as_codex_client_configured() {
+        let dir = std::env::temp_dir().join(format!("keydock-codex-profile-{}", Uuid::new_v4()));
+        let store = KeydockStore::new(&dir);
+        let profile = CodexProfile {
+            directory: String::new(),
+            config_path: String::new(),
+            auth_path: String::new(),
+            has_directory: true,
+            has_config: true,
+            has_auth: true,
+            configured: true,
+            label: "Codex OpenAI".to_string(),
+            provider_name: "OpenAI".to_string(),
+            base_url: "https://new.sharedchat.cc/codex".to_string(),
+            has_provider_base_url: true,
+            model: "gpt-5.5".to_string(),
+            models: vec![],
+            masked_key: "sk-test...1234".to_string(),
+            message: String::new(),
+            api_key: "sk-profile-1111111111".to_string(),
+        };
+
+        let record = store.upsert_codex_profile(&profile).unwrap().unwrap();
+
+        assert!(record.active);
+        assert!(record.available);
+        assert_eq!(record.status_code, 200);
+        assert_eq!(record.supported_clients, vec!["codex"]);
+        assert!(!record.client_support_checked_at.is_empty());
+        assert!(!record.last_validated_at.is_empty());
+        assert_eq!(
+            record.validation_message,
+            "Codex is configured to use this key."
+        );
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

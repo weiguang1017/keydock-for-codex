@@ -171,12 +171,81 @@ code {
   margin-bottom: 12px;
 }
 
+.block-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+}
+
 .block-head h2 {
   font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.02em;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+.all-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  margin: -4px 0;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.all-filter-btn:hover {
+  background: var(--surface-2);
+}
+
+.all-filter-btn.selected {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.client-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.client-filter-btn {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.client-filter-btn:hover {
+  background: var(--surface-2);
+}
+
+.client-filter-btn.selected {
+  border-color: color-mix(in srgb, var(--accent) 64%, var(--border));
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.client-filter-btn img {
+  display: block;
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
 }
 
 .search-box input {
@@ -203,6 +272,10 @@ code {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 16px;
+}
+
+.active-client-row {
+  margin: -6px 0 14px;
 }
 
 .active-name {
@@ -340,6 +413,33 @@ code {
 
 .key-meta .model {
   color: var(--muted);
+}
+
+.client-icons {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 22px;
+}
+
+.client-icon {
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  line-height: 1;
+  flex: none;
+  background: var(--surface-2);
+}
+
+.client-icon img {
+  display: block;
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
 }
 
 .status-line {

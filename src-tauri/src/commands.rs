@@ -3,7 +3,9 @@ use serde::Serialize;
 use crate::cli;
 use crate::codex::{self, CodexProfile};
 use crate::store::{ExportBundle, ImportSummary, KeyRecord, KeydockStore, MetadataUpdate};
-use crate::validate::{probe_responses_key, trim, validate_key, ValidationResult};
+use crate::validate::{
+    normalize_or_default, normalize_supported_clients, trim, validate_clients_key, ValidationResult,
+};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,37 +70,15 @@ pub fn test_draft_key(
         }
     }
 
-    // List the available models first so the dialog can populate its dropdown.
-    let listing = validate_key(&key, base_url.as_deref());
-
-    // The `/models` endpoint of many OpenAI-compatible proxies does not actually
-    // authenticate the bearer token, so a wrong key still returns 200. Confirm the
-    // key with a real authenticated request (`POST /responses`) whenever we have a
-    // model to send. We always run this against the base URL currently in the form
-    // so that changing only the base URL (while keeping the stored key) is still
-    // validated against the new endpoint.
-    let chosen_model = trim(model.unwrap_or_default());
-    let probe_model = if !chosen_model.is_empty() {
-        chosen_model
-    } else {
-        trim(&listing.model)
-    };
-
-    if probe_model.is_empty() {
-        return listing;
-    }
-
-    let mut auth = probe_responses_key(&key, base_url.as_deref(), &probe_model);
-    if auth.valid {
-        // Carry the discovered model list back to the dialog.
-        if auth.models.is_empty() {
-            auth.models = listing.models;
-        }
-        if trim(&auth.model).is_empty() {
-            auth.model = probe_model;
-        }
-    }
-    auth
+    let model = model.unwrap_or_default();
+    let result = validate_clients_key(&key, base_url.as_deref(), &model);
+    trust_current_codex_config(
+        result,
+        &codex::read_codex_profile(None),
+        &key,
+        base_url.as_deref(),
+        &model,
+    )
 }
 
 #[tauri::command]
@@ -119,8 +99,19 @@ pub fn add_key(
         }
         result
     } else {
-        validate_key(&api_key, base_url.as_deref())
+        validate_clients_key(
+            &api_key,
+            base_url.as_deref(),
+            model.clone().unwrap_or_default(),
+        )
     };
+    check = trust_current_codex_config(
+        check,
+        &codex::read_codex_profile(None),
+        &api_key,
+        base_url.as_deref(),
+        model.as_deref().unwrap_or_default(),
+    );
     if !check.valid {
         return Err(check.message);
     }
@@ -129,7 +120,9 @@ pub fn add_key(
             check.model = trim(model);
         }
     }
-    KeydockStore::default().add(label, base_url.unwrap_or_default(), api_key, &check)
+    let store = KeydockStore::default();
+    let base_url = base_url.unwrap_or_default();
+    store.add(label, base_url, api_key, &check)
 }
 
 #[tauri::command]
@@ -202,6 +195,7 @@ pub fn update_metadata(
     base_url: Option<String>,
     model: Option<String>,
     api_key: Option<String>,
+    validation: Option<ValidationResult>,
 ) -> Result<KeyRecord, String> {
     let store = KeydockStore::default();
     let previous = store.list()?.into_iter().find(|item| item.id == id);
@@ -216,7 +210,7 @@ pub fn update_metadata(
         store.set_secret(&id, api_key.as_ref().unwrap())?;
     }
 
-    let record = store.update_metadata(
+    let mut record = store.update_metadata(
         &id,
         MetadataUpdate {
             label,
@@ -228,9 +222,19 @@ pub fn update_metadata(
             } else {
                 None
             },
+            supported_clients: if key_changed { Some(Vec::new()) } else { None },
+            client_support_checked_at: if key_changed {
+                Some(String::new())
+            } else {
+                None
+            },
             ..MetadataUpdate::default()
         },
     )?;
+
+    if let Some(result) = validation.as_ref().filter(|result| result.valid) {
+        record = store.mark_validation(&id, result)?;
+    }
 
     // For the active key, keep Codex's own config (~/.codex) in sync so the edit
     // actually applies and is not reverted by the next list_keys() profile sync.
@@ -282,9 +286,14 @@ pub fn validate_key_cmd(id: String) -> Result<ValidationResult, String> {
             }
         })
         .unwrap_or_default();
-    // Probe the real /responses endpoint so availability reflects what Codex
-    // actually does, not just whether /models can be listed.
-    let check = probe_responses_key(&api_key, base_url.as_deref(), &model);
+    // Probe each supported client family with the real endpoint shape it uses.
+    let check = trust_current_codex_config(
+        validate_clients_key(&api_key, base_url.as_deref(), &model),
+        &codex::read_codex_profile(None),
+        &api_key,
+        base_url.as_deref(),
+        &model,
+    );
     store.mark_validation(id, &check)?;
     Ok(check)
 }
@@ -300,13 +309,7 @@ pub fn switch_key(id: String) -> Result<SwitchResult, String> {
         .ok_or_else(|| "Key not found.".to_string())?;
     // Apply the config directly. Availability is checked separately via the
     // card "Check" action — a transient upstream error must not block switching.
-    codex::apply_codex_profile(
-        None,
-        &api_key,
-        &record.base_url,
-        &record.model,
-        None,
-    )?;
+    codex::apply_codex_profile(None, &api_key, &record.base_url, &record.model, None)?;
 
     let mut restarted = false;
     let mut warning = String::new();
@@ -339,16 +342,14 @@ pub fn diagnostics() -> Diagnostics {
 
     match cli::find_codex_path() {
         Ok(path) => {
-            let current_key = cli::read_codex_login(&path)
-                .ok()
-                .and_then(|status| {
-                    let masked_key = cli::extract_masked_key_from_status(&status);
-                    if masked_key.is_empty() {
-                        None
-                    } else {
-                        Some(CurrentKey { status, masked_key })
-                    }
-                });
+            let current_key = cli::read_codex_login(&path).ok().and_then(|status| {
+                let masked_key = cli::extract_masked_key_from_status(&status);
+                if masked_key.is_empty() {
+                    None
+                } else {
+                    Some(CurrentKey { status, masked_key })
+                }
+            });
             Diagnostics {
                 message: String::new(),
                 codex_path: path.to_string_lossy().into_owned(),
@@ -379,4 +380,111 @@ fn sync_codex_profile(store: &KeydockStore) -> Result<CodexProfile, String> {
         let _ = store.upsert_codex_profile(&profile)?;
     }
     Ok(profile)
+}
+
+fn trust_current_codex_config(
+    mut result: ValidationResult,
+    profile: &CodexProfile,
+    api_key: &str,
+    base_url: Option<&str>,
+    model: &str,
+) -> ValidationResult {
+    if !codex_profile_matches_key(profile, api_key, base_url, model) {
+        return result;
+    }
+
+    let mut clients = result.supported_clients.clone();
+    clients.push("codex".to_string());
+    result.supported_clients = normalize_supported_clients(clients);
+    if result.model.is_empty() && !trim(model).is_empty() {
+        result.model = trim(model);
+    }
+
+    if !result.valid {
+        let probe_detail = trim(&result.message);
+        result.valid = true;
+        result.status_code = 200;
+        result.message = if probe_detail.is_empty() {
+            "Codex is configured to use this key.".to_string()
+        } else {
+            format!("Codex is configured to use this key. Other probe result: {probe_detail}")
+        };
+    }
+    result
+}
+
+fn codex_profile_matches_key(
+    profile: &CodexProfile,
+    api_key: &str,
+    base_url: Option<&str>,
+    model: &str,
+) -> bool {
+    if !profile.configured || trim(&profile.api_key) != trim(api_key) {
+        return false;
+    }
+    let profile_base = normalize_or_default(&profile.base_url).ok();
+    let target_base = normalize_or_default(base_url.unwrap_or_default()).ok();
+    if profile_base != target_base {
+        return false;
+    }
+    let profile_model = trim(&profile.model);
+    let target_model = trim(model);
+    profile_model.is_empty() || target_model.is_empty() || profile_model == target_model
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn matching_profile() -> CodexProfile {
+        CodexProfile {
+            directory: String::new(),
+            config_path: String::new(),
+            auth_path: String::new(),
+            has_directory: true,
+            has_config: true,
+            has_auth: true,
+            configured: true,
+            label: "Codex OpenAI".to_string(),
+            provider_name: "OpenAI".to_string(),
+            base_url: "https://new.sharedchat.cc/codex".to_string(),
+            has_provider_base_url: true,
+            model: "gpt-5.5".to_string(),
+            models: vec![],
+            masked_key: "sk-profile...1234".to_string(),
+            message: String::new(),
+            api_key: "sk-profile-1111111111".to_string(),
+        }
+    }
+
+    #[test]
+    fn trusts_current_codex_config_when_probe_fails() {
+        let result = trust_current_codex_config(
+            ValidationResult::fail(400, "HTTP 400: unsupported parameter", vec![]),
+            &matching_profile(),
+            "sk-profile-1111111111",
+            Some("https://new.sharedchat.cc/codex"),
+            "gpt-5.5",
+        );
+
+        assert!(result.valid);
+        assert_eq!(result.status_code, 200);
+        assert_eq!(result.supported_clients, vec!["codex"]);
+        assert!(result.message.contains("Codex is configured"));
+        assert!(result.message.contains("unsupported parameter"));
+    }
+
+    #[test]
+    fn does_not_trust_unmatched_codex_config() {
+        let result = trust_current_codex_config(
+            ValidationResult::fail(400, "HTTP 400: unsupported parameter", vec![]),
+            &matching_profile(),
+            "sk-other-1111111111",
+            Some("https://new.sharedchat.cc/codex"),
+            "gpt-5.5",
+        );
+
+        assert!(!result.valid);
+        assert!(result.supported_clients.is_empty());
+    }
 }
