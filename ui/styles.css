@@ -424,15 +424,72 @@ code {
 }
 
 .client-icon {
+  position: relative;
   display: inline-grid;
   width: 22px;
   height: 22px;
+  min-height: 22px;
+  padding: 0;
   place-items: center;
   border: 1px solid var(--border);
   border-radius: 7px;
   line-height: 1;
   flex: none;
   background: var(--surface-2);
+  cursor: pointer;
+}
+
+.client-icon.unsupported {
+  background: color-mix(in srgb, var(--surface-2) 72%, var(--border));
+  opacity: 0.48;
+}
+
+.client-icon.unsupported img {
+  filter: grayscale(1) saturate(0.35);
+}
+
+.client-icon.supported {
+  border-color: color-mix(in srgb, var(--ok) 32%, var(--border));
+  background: color-mix(in srgb, var(--ok) 7%, var(--surface));
+  opacity: 1;
+}
+
+.client-icon[role="img"] {
+  cursor: default;
+}
+
+button.client-icon:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--border));
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+  opacity: 1;
+}
+
+.client-icon.chosen {
+  border-color: color-mix(in srgb, var(--accent) 72%, var(--border));
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 76%, transparent),
+    0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent);
+  opacity: 1;
+}
+
+.client-icon.active-client::after {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid var(--surface);
+  border-radius: 999px;
+  background: var(--ok);
+  content: "";
+}
+
+.client-icon:focus-visible {
+  outline: 0;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 76%, transparent),
+    0 0 0 4px color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
 .client-icon img {

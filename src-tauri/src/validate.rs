@@ -13,6 +13,8 @@ pub struct ValidationResult {
     pub models: Vec<String>,
     #[serde(default)]
     pub supported_clients: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub client_support_probes: Vec<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub model: String,
 }
@@ -25,6 +27,7 @@ impl ValidationResult {
             message: message.into(),
             models,
             supported_clients: Vec::new(),
+            client_support_probes: Vec::new(),
             model: String::new(),
         }
     }
@@ -36,6 +39,7 @@ impl ValidationResult {
             message: message.into(),
             models,
             supported_clients: Vec::new(),
+            client_support_probes: Vec::new(),
             model: String::new(),
         }
     }
@@ -459,11 +463,12 @@ pub fn validate_clients_key(
             vec!["gpt-4.1".to_string(), "gpt-4.1-mini".to_string()],
         );
         result.model = selected_model;
-        result.supported_clients = normalize_supported_clients([
-            CLIENT_CODEX.to_string(),
-            CLIENT_OPENCLAW.to_string(),
-            CLIENT_HERMES.to_string(),
-        ]);
+        result.supported_clients =
+            normalize_supported_clients([CLIENT_CODEX.to_string(), CLIENT_OPENCLAW.to_string()]);
+        result.client_support_probes = vec![
+            "codex:responses".to_string(),
+            "openclaw:chat_completions".to_string(),
+        ];
         return result;
     }
 
@@ -499,12 +504,14 @@ pub fn validate_clients_key(
     let chat = probe_chat_completions_key(&key, base_url, &selected_model);
 
     let mut supported = Vec::new();
+    let mut probes = Vec::new();
     if codex.valid {
         supported.push(CLIENT_CODEX.to_string());
+        probes.push("codex:responses".to_string());
     }
     if chat.valid {
         supported.push(CLIENT_OPENCLAW.to_string());
-        supported.push(CLIENT_HERMES.to_string());
+        probes.push("openclaw:chat_completions".to_string());
     }
     supported = normalize_supported_clients(supported);
 
@@ -514,6 +521,7 @@ pub fn validate_clients_key(
         result.status_code = primary.status_code;
         result.model = selected_model;
         result.supported_clients = supported;
+        result.client_support_probes = probes;
         result
     } else {
         let mut result = ValidationResult::fail(
@@ -523,7 +531,7 @@ pub fn validate_clients_key(
                 chat.status_code
             },
             format!(
-                "No supported client detected. Codex: {}; OpenClaw/Hermes: {}",
+                "No supported client detected. Codex: {}; OpenClaw: {}",
                 trim(&codex.message),
                 trim(&chat.message)
             ),
@@ -706,6 +714,29 @@ pub fn probe_chat_completions_key(
             ],
             "stream": false,
             "tools": tool_probe,
+        }),
+        serde_json::json!({
+            "model": model,
+            "messages": [
+                { "role": "user", "content": "Reply with exactly: pong" }
+            ],
+            "max_completion_tokens": 16,
+            "stream": false,
+        }),
+        serde_json::json!({
+            "model": model,
+            "messages": [
+                { "role": "user", "content": "Reply with exactly: pong" }
+            ],
+            "max_tokens": 16,
+            "stream": false,
+        }),
+        serde_json::json!({
+            "model": model,
+            "messages": [
+                { "role": "user", "content": "Reply with exactly: pong" }
+            ],
+            "stream": false,
         }),
     ];
 

@@ -31,7 +31,9 @@ if (!window.keydock && typeof tauriInvoke === 'function') {
     }),
     deleteKey: ({ id }) => tauriInvoke('delete_key', { id }),
     validateKey: ({ id }) => tauriInvoke('validate_key_cmd', { id }),
+    validateKeyClient: ({ id, client }) => tauriInvoke('validate_key_client_cmd', { id, client }),
     switchKey: ({ id }) => tauriInvoke('switch_key', { id }),
+    switchKeyClient: ({ id, client }) => tauriInvoke('switch_key_client', { id, client }),
     diagnostics: () => tauriInvoke('diagnostics')
   };
 }
@@ -46,6 +48,7 @@ const CLIENT_OPTIONS = [
 ];
 
 const clientFilters = new Set();
+const selectedClients = new Map();
 
 const translations = {
   en: {
@@ -102,6 +105,8 @@ const translations = {
     activeInCodexCli: 'In use · Codex CLI running',
     activeInCodexBoth: 'In use · Codex app + CLI running',
     activeInCodexConfig: 'In use · written to config',
+    activeClientsRunning: 'In use · {clients} running',
+    activeClientsConfig: 'In use · {clients} configured',
     notChecked: 'Not checked',
     noModels: 'No models reported yet',
     keyWillBeChecked: 'Test the key to load available models, then add it to Keydock.',
@@ -115,9 +120,16 @@ const translations = {
     savingDetails: 'Saving details...',
     detailsSaved: 'Details saved.',
     checkingKey: 'Checking key...',
+    checkingClient: 'Checking {client} support...',
     keyValid: 'Key is valid.',
+    clientValid: '{client} is supported.',
     actionFailed: 'Action failed.',
     switching: 'Switching Codex key and writing config...',
+    switchingClient: 'Switching {client} configuration...',
+    switchClientTitle: 'Switch this key into {client}',
+    selectClientTitle: 'Select {client} for switch/check',
+    clientSupported: 'Supported',
+    clientUnsupported: 'Not supported or not checked',
     switchedOk: 'Switched. Codex config updated and Desktop restarted.',
     switchedManual: 'Switched. Codex config updated — restart Codex to apply.',
     deleteConfirm: 'Delete this key from Keydock?',
@@ -141,6 +153,8 @@ const translations = {
     noMatches: 'No matching keys.',
     switchedRestarted: 'Switched. Config updated and the Codex client was restarted.',
     switchedNoClient: 'Switched. Codex config updated.',
+    switchedClientRestarted: 'Switched. {client} config updated and service restarted.',
+    switchedClientNoRestart: 'Switched. {client} config updated.',
     cliReminder: 'Codex CLI sessions only take effect after you exit and reopen the terminal.',
     editKeyPlaceholder: 'Leave blank to keep the current key',
     confirmTitle: 'Please confirm',
@@ -202,6 +216,8 @@ const translations = {
     activeInCodexCli: '使用中 · Codex CLI 运行中',
     activeInCodexBoth: '使用中 · Codex 应用 + CLI 运行中',
     activeInCodexConfig: '使用中 · 已写入配置',
+    activeClientsRunning: '使用中 · {clients} 运行中',
+    activeClientsConfig: '使用中 · 已写入 {clients} 配置',
     notChecked: '未检查',
     noModels: '还没有返回模型',
     keyWillBeChecked: '先测试 Key 并加载可用模型，然后再添加到 Keydock。',
@@ -215,9 +231,16 @@ const translations = {
     savingDetails: '正在保存信息...',
     detailsSaved: '信息已保存。',
     checkingKey: '正在检查 Key...',
+    checkingClient: '正在检测 {client} 支持...',
     keyValid: 'Key 可用。',
+    clientValid: '{client} 可用。',
     actionFailed: '操作失败。',
     switching: '正在切换 Codex Key 并写入配置...',
+    switchingClient: '正在切换 {client} 配置...',
+    switchClientTitle: '将这个 Key 切换到 {client}',
+    selectClientTitle: '选择 {client} 作为切换/检测目标',
+    clientSupported: '已支持',
+    clientUnsupported: '未支持或未检测',
     switchedOk: '已切换，Codex 配置已更新并重启了 Desktop。',
     switchedManual: '已切换，Codex 配置已更新——请手动重启 Codex 生效。',
     deleteConfirm: '确定要从 Keydock 删除这个 Key 吗？',
@@ -241,6 +264,8 @@ const translations = {
     noMatches: '没有匹配的 Key。',
     switchedRestarted: '已切换，配置已更新并重启了 Codex 客户端。',
     switchedNoClient: '已切换，Codex 配置已更新。',
+    switchedClientRestarted: '已切换，{client} 配置已更新并重启了服务。',
+    switchedClientNoRestart: '已切换，{client} 配置已更新。',
     cliReminder: 'Codex CLI 需退出当前终端会话后重新进入才生效。',
     editKeyPlaceholder: '留空则保持当前 Key',
     confirmTitle: '请确认',
@@ -302,6 +327,8 @@ const translations = {
     activeInCodexCli: '使用中 · Codex CLI 実行中',
     activeInCodexBoth: '使用中 · Codex アプリ + CLI 実行中',
     activeInCodexConfig: '使用中 · 設定に書き込み済み',
+    activeClientsRunning: '使用中 · {clients} 実行中',
+    activeClientsConfig: '使用中 · {clients} 設定済み',
     notChecked: '未確認',
     noModels: 'モデルはまだ取得されていません',
     keyWillBeChecked: 'キーをテストして利用可能なモデルを読み込み、その後 Keydock に追加します。',
@@ -315,9 +342,16 @@ const translations = {
     savingDetails: '詳細を保存しています...',
     detailsSaved: '詳細を保存しました。',
     checkingKey: 'キーを確認しています...',
+    checkingClient: '{client} 対応を確認しています...',
     keyValid: 'キーは利用可能です。',
+    clientValid: '{client} は対応しています。',
     actionFailed: '操作に失敗しました。',
     switching: 'Codex キーを切り替えて設定を書き込んでいます...',
+    switchingClient: '{client} の設定を切り替えています...',
+    switchClientTitle: 'このキーを {client} に切り替え',
+    selectClientTitle: '切替/確認対象に {client} を選択',
+    clientSupported: '対応済み',
+    clientUnsupported: '未対応または未確認',
     switchedOk: '切替しました。Codex 設定を更新し、Desktop を再起動しました。',
     switchedManual: '切替しました。Codex 設定を更新しました——反映には Codex を再起動してください。',
     deleteConfirm: 'このキーを Keydock から削除しますか？',
@@ -341,6 +375,8 @@ const translations = {
     noMatches: '一致するキーはありません。',
     switchedRestarted: '切替しました。設定を更新し、Codex クライアントを再起動しました。',
     switchedNoClient: '切替しました。Codex 設定を更新しました。',
+    switchedClientRestarted: '切替しました。{client} 設定を更新し、サービスを再起動しました。',
+    switchedClientNoRestart: '切替しました。{client} 設定を更新しました。',
     cliReminder: 'Codex CLI はターミナルのセッションを終了して開き直すと反映されます。',
     editKeyPlaceholder: '空欄なら現在のキーを保持します',
     confirmTitle: '確認してください',
@@ -407,23 +443,100 @@ function clientOption(id) {
   return CLIENT_OPTIONS.find((option) => option.id === id) || null;
 }
 
-function clientIdsForKey(key) {
+function supportedClientIdsForKey(key) {
   if (!String(key?.clientSupportCheckedAt || '').trim()) return [];
-  const ids = normalizeClientIds(key?.supportedClients);
-  return ids;
+  return normalizeClientIds(key?.supportedClients);
 }
 
-function renderClientIcons(values) {
-  const ids = normalizeClientIds(values);
-  if (ids.length === 0) return '';
-  const icons = ids
-    .map((id) => {
-      const option = clientOption(id);
-      if (!option) return '';
-      return `<span class="client-icon ${escapeHtml(option.id)}" title="${escapeHtml(option.label)}" aria-label="${escapeHtml(option.label)}"><img src="${escapeHtml(option.icon)}" alt="" aria-hidden="true"></span>`;
+function clientIdsForKey(key) {
+  return supportedClientIdsForKey(key);
+}
+
+function activeClientIdsForKey(key) {
+  return normalizeClientIds(key?.activeClients);
+}
+
+function runningClientIdsForKey(key) {
+  return normalizeClientIds(key?.runningClients);
+}
+
+function clientLabels(ids) {
+  return normalizeClientIds(ids)
+    .map((id) => clientOption(id)?.label || id)
+    .join(' / ');
+}
+
+function selectedClientForKey(key) {
+  const explicit = normalizeClientIds([selectedClients.get(key?.id)])[0];
+  if (explicit) return explicit;
+  const active = activeClientIdsForKey(key)[0];
+  if (active) return active;
+  const supported = supportedClientIdsForKey(key)[0];
+  if (supported) return supported;
+  return CLIENT_OPTIONS[0].id;
+}
+
+function setSelectedClientForKey(id, client) {
+  const normalized = normalizeClientIds([client])[0];
+  if (!id || !normalized) return;
+  selectedClients.set(id, normalized);
+  render();
+}
+
+function pruneSelectedClients() {
+  const ids = new Set(keys.map((key) => key.id));
+  for (const id of selectedClients.keys()) {
+    if (!ids.has(id)) selectedClients.delete(id);
+  }
+}
+
+function renderClientIcons(key, { interactive = true } = {}) {
+  const supportedIds = new Set(supportedClientIdsForKey(key));
+  const selectedIds = new Set(activeClientIdsForKey(key));
+  const selectedClient = selectedClientForKey(key);
+  const icons = CLIENT_OPTIONS
+    .map((option) => {
+      const supported = supportedIds.has(option.id);
+      const active = selectedIds.has(option.id);
+      const chosen = interactive && selectedClient === option.id;
+      const title = `${t('selectClientTitle', { client: option.label })} · ${supported ? t('clientSupported') : t('clientUnsupported')}`;
+      const classes = [
+        'client-icon',
+        option.id,
+        supported ? 'supported' : 'unsupported',
+        active ? 'active-client' : '',
+        chosen ? 'chosen' : ''
+      ].filter(Boolean).join(' ');
+      if (!interactive) {
+        return `
+          <span
+            class="${escapeHtml(classes)}"
+            title="${escapeHtml(title)}"
+            aria-label="${escapeHtml(title)}"
+            role="img"
+          >
+            <img src="${escapeHtml(option.icon)}" alt="" aria-hidden="true">
+          </span>
+        `;
+      }
+      return `
+        <button
+          type="button"
+          class="${escapeHtml(classes)}"
+          data-act="select-client"
+          data-client="${escapeHtml(option.id)}"
+          title="${escapeHtml(title)}"
+          aria-label="${escapeHtml(title)}"
+          aria-pressed="${chosen ? 'true' : 'false'}"
+        >
+          <img src="${escapeHtml(option.icon)}" alt="" aria-hidden="true">
+        </button>
+      `;
     })
     .join('');
-  const labels = ids.map((id) => clientOption(id)?.label).filter(Boolean).join(', ');
+  const labels = CLIENT_OPTIONS
+    .map((option) => `${option.label}: ${supportedIds.has(option.id) ? t('clientSupported') : t('clientUnsupported')}`)
+    .join(', ');
   return `<div class="client-icons" aria-label="${escapeHtml(t('supportedClients'))}: ${escapeHtml(labels)}">${icons}</div>`;
 }
 
@@ -481,14 +594,15 @@ function setBusy(value, message) {
   $('confirmAdd').disabled = value || !draftValidation?.valid;
   $('validateNewButton').disabled = value;
   $('addButton').disabled = value;
-  document.querySelectorAll('.key-card button').forEach((node) => {
+  document.querySelectorAll('.key-card button, .active-card button').forEach((node) => {
     node.disabled = value;
   });
 }
 
 function keyStatus(key) {
   if (!key) return '-';
-  if (key.active) return activeUsageLabel();
+  if (activeClientIdsForKey(key).length > 0) return activeUsageLabel(key);
+  if (key.active) return activeUsageLabel(key);
   if (key.available) return t('available');
   if (key.lastValidatedAt) return t('unavailable');
   return t('notChecked');
@@ -497,7 +611,13 @@ function keyStatus(key) {
 // Describe where the active key is currently consumed, based on which Codex
 // surfaces are actually running on this machine. Falls back to "written to
 // config" when nothing is detected running.
-function activeUsageLabel() {
+function activeUsageLabel(key = null) {
+  const activeIds = activeClientIdsForKey(key);
+  if (activeIds.length > 0) {
+    const runningIds = runningClientIdsForKey(key);
+    const clients = clientLabels(runningIds.length > 0 ? runningIds : activeIds);
+    return t(runningIds.length > 0 ? 'activeClientsRunning' : 'activeClientsConfig', { clients });
+  }
   const appRunning = !!codexInfo?.codexDesktopRunning;
   const cliRunning = !!codexInfo?.codexCliRunning;
   if (appRunning && cliRunning) return t('activeInCodexBoth');
@@ -508,13 +628,13 @@ function activeUsageLabel() {
 
 function keyStatusClass(key) {
   if (!key) return 'idle';
-  if (key.active || key.available) return 'ok';
+  if (key.active || activeClientIdsForKey(key).length > 0 || key.available) return 'ok';
   if (key.lastValidatedAt) return 'bad';
   return 'idle';
 }
 
 function activeKey() {
-  return keys.find((key) => key.active) || null;
+  return keys.find((key) => key.active) || keys.find((key) => activeClientIdsForKey(key).length > 0) || null;
 }
 
 function renderActiveCard() {
@@ -524,7 +644,7 @@ function renderActiveCard() {
 
   if (active) {
     const modelText = active.model || t('noModels');
-    const clientIcons = renderClientIcons(clientIdsForKey(active));
+    const clientIcons = renderClientIcons(active, { interactive: false });
     card.className = `active-card ok`;
     card.innerHTML = `
       <div class="active-top">
@@ -535,7 +655,7 @@ function renderActiveCard() {
         </div>
         <span class="active-status">${escapeHtml(keyStatus(active))}</span>
       </div>
-      ${clientIcons ? `<div class="active-client-row">${clientIcons}</div>` : ''}
+      <div class="active-client-row">${clientIcons}</div>
       <div class="active-grid">
         <div><span>${escapeHtml(t('baseUrl'))}</span><code>${escapeHtml(active.baseUrl || DEFAULT_BASE_URL)}</code></div>
         <div><span>${escapeHtml(t('apiKey'))}</span><code>${escapeHtml(active.maskedKey || '-')}</code></div>
@@ -620,21 +740,22 @@ function renderKeyGrid() {
     const modelCount = Array.isArray(key.models) ? key.models.length : 0;
     const statusClass = keyStatusClass(key);
     const showDetail = statusClass === 'bad' && !!(key.validationMessage || '').trim();
+    const inUse = key.active || activeClientIdsForKey(key).length > 0;
     const card = document.createElement('article');
-    card.className = `key-card${key.active ? ' active' : ''}`;
+    card.className = `key-card${inUse ? ' active' : ''}`;
     card.dataset.id = key.id;
     card.innerHTML = `
       <div class="key-card-head">
         <span class="dot ${statusClass}"></span>
         <strong>${escapeHtml(key.label || '-')}</strong>
-        ${key.active ? `<span class="badge">${escapeHtml(t('activeBadge'))}</span>` : ''}
+        ${inUse ? `<span class="badge">${escapeHtml(t('activeBadge'))}</span>` : ''}
       </div>
       <code class="masked">${escapeHtml(key.maskedKey || '-')}</code>
       <div class="key-meta">
         <span class="url" title="${escapeHtml(key.baseUrl || '')}">${escapeHtml(key.baseUrl || DEFAULT_BASE_URL)}</span>
         <span class="model">${escapeHtml(key.model || (modelCount ? t('modelsBadge', { count: modelCount }) : '-'))}</span>
       </div>
-      ${renderClientIcons(clientIdsForKey(key))}
+      ${renderClientIcons(key)}
       <div class="status-line ${statusClass}">
         <span class="status-text">${escapeHtml(keyStatus(key))}</span>
         ${showDetail ? `<button type="button" class="detail-btn" data-act="detail" title="${escapeHtml(t('detailTitle'))}" aria-label="${escapeHtml(t('detailTitle'))}">&#9432;</button>` : ''}
@@ -674,6 +795,7 @@ async function refresh() {
     return;
   }
   keys = await window.keydock.listKeys();
+  pruneSelectedClients();
   render();
 }
 
@@ -1107,25 +1229,46 @@ function customConfirm(message, confirmLabel) {
 
 /* ---------- Card actions ---------- */
 
-async function switchKey(id) {
-  const result = await withAction(t('switching'), () => window.keydock.switchKey({ id }));
+async function switchKeyClient(id, client) {
+  const option = clientOption(client);
+  if (!option) return;
+  const result = await withAction(
+    client === 'codex' ? t('switching') : t('switchingClient', { client: option.label }),
+    () => window.keydock.switchKeyClient({ id, client })
+  );
   if (result) {
-    let head;
-    if (result.warning) head = result.warning;
-    else if (result.restarted) head = t('switchedRestarted');
-    else head = t('switchedNoClient');
-    $('message').textContent = `${head} ${t('cliReminder')}`;
+    if (client === 'codex') {
+      let head;
+      if (result.warning) head = result.warning;
+      else if (result.restarted) head = t('switchedRestarted');
+      else head = t('switchedNoClient');
+      $('message').textContent = `${head} ${t('cliReminder')}`;
+      return;
+    }
+    const head = result.warning
+      ? result.warning
+      : result.restarted
+        ? t('switchedClientRestarted', { client: option.label })
+        : t('switchedClientNoRestart', { client: option.label });
+    $('message').textContent = head;
   }
 }
 
-async function checkKey(id) {
-  const result = await withAction(t('checkingKey'), () => window.keydock.validateKey({ id }));
-  $('message').textContent = result?.valid ? t('keyValid') : (result?.message || t('actionFailed'));
+async function checkKeyClient(id, client) {
+  const option = clientOption(client);
+  if (!option) return;
+  const result = await withAction(
+    t('checkingClient', { client: option.label }),
+    () => window.keydock.validateKeyClient({ id, client })
+  );
+  $('message').textContent = result?.supportedClients?.includes(client)
+    ? t('clientValid', { client: option.label })
+    : (result?.message || t('actionFailed'));
 }
 
 async function deleteKey(id) {
   const key = keys.find((item) => item.id === id);
-  if (key?.active) {
+  if (key?.active || activeClientIdsForKey(key).length > 0) {
     $('message').textContent = t('cannotDeleteActive');
     return;
   }
@@ -1260,8 +1403,14 @@ $('keyGrid').addEventListener('click', (event) => {
     return;
   }
   if (busy) return;
-  if (action === 'switch') switchKey(id);
-  else if (action === 'check') checkKey(id);
+  if (action === 'select-client') setSelectedClientForKey(id, button.dataset.client);
+  else if (action === 'switch') {
+    const key = keys.find((item) => item.id === id);
+    switchKeyClient(id, selectedClientForKey(key));
+  } else if (action === 'check') {
+    const key = keys.find((item) => item.id === id);
+    checkKeyClient(id, selectedClientForKey(key));
+  }
   else if (action === 'edit') openEditDialog(id);
   else if (action === 'delete') deleteKey(id);
 });

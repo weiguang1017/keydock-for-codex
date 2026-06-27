@@ -21,7 +21,9 @@ pub fn run() {
             commands::update_metadata,
             commands::delete_key,
             commands::validate_key_cmd,
+            commands::validate_key_client_cmd,
             commands::switch_key,
+            commands::switch_key_client,
             commands::diagnostics,
         ])
         .run(tauri::generate_context!())

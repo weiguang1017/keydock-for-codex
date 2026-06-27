@@ -242,7 +242,7 @@ pub fn is_codex_cli_running() -> bool {
                         return false;
                     }
                     // Match an invocation whose executable is literally `codex`.
-                    line.split_whitespace().nth(1).map_or(false, |cmd| {
+                    line.split_whitespace().nth(1).is_some_and(|cmd| {
                         let name = cmd.rsplit('/').next().unwrap_or(cmd);
                         name == "codex" || name.starts_with("codex")
                     })
