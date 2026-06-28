@@ -1056,6 +1056,13 @@ fn probe_hermes_client_support(
     {
         return Err("Hermes probe skipped.".to_string());
     }
+    let http_probe = probe_chat_completions_key(api_key, base_url, model);
+    if !http_probe.valid {
+        return Err(format!(
+            "Hermes chat-completions preflight failed. {}",
+            trim(&http_probe.message)
+        ));
+    }
     let hermes_path = find_hermes_path()?;
     let temp_dir =
         std::env::temp_dir().join(format!("keydock-hermes-probe-{}", uuid::Uuid::new_v4()));
@@ -1081,7 +1088,9 @@ fn probe_hermes_client_support(
                 "Reply with exactly: OK",
             ]);
         let output = run_command_with_timeout(&mut command, Duration::from_secs(45))?;
-        if output.status_success && !hermes_output_looks_like_fallback(&output) {
+        if let Some(error) = hermes_api_error_from_output(&output) {
+            Err(format!("Hermes probe returned an API error. {error}"))
+        } else if output.status_success && !hermes_output_looks_like_fallback(&output) {
             Ok(())
         } else if output.status_success {
             Err("Hermes answered through a fallback provider, so this key is not counted as Hermes-compatible.".to_string())
@@ -1152,6 +1161,63 @@ fn hermes_output_looks_like_fallback(output: &CommandRun) -> bool {
     ]
     .iter()
     .any(|marker| combined.contains(marker))
+}
+
+fn hermes_api_error_from_output(output: &CommandRun) -> Option<String> {
+    let combined = trim(format!("{}\n{}", output.stdout, output.stderr));
+    if combined.is_empty() {
+        return None;
+    }
+    let lower = combined.to_ascii_lowercase();
+    let has_api_error = [
+        "api call failed",
+        "http 400",
+        "http 401",
+        "http 403",
+        "http 404",
+        "http 429",
+        "http 500",
+        "http 502",
+        "http 503",
+        "http 504",
+        "error code: 400",
+        "error code: 401",
+        "error code: 403",
+        "error code: 404",
+        "error code: 429",
+        "error code: 500",
+        "error code: 502",
+        "error code: 503",
+        "error code: 504",
+        "notfounderror",
+        "authenticationerror",
+        "permissiondeniederror",
+        "ratelimiterror",
+        "badrequesterror",
+        "api 不支持所选模型",
+        "不支持所选模型",
+        "model not found",
+        "unsupported model",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker));
+    if !has_api_error {
+        return None;
+    }
+    combined
+        .lines()
+        .map(trim)
+        .find(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.contains("api call failed")
+                || lower.contains("http 4")
+                || lower.contains("http 5")
+                || lower.contains("error code:")
+                || lower.contains("error:")
+                || lower.contains("api 不支持所选模型")
+                || lower.contains("不支持所选模型")
+        })
+        .or_else(|| Some(combined))
 }
 
 fn replace_yaml_section(content: &str, section: &str, replacement: &str) -> String {
@@ -2045,6 +2111,31 @@ model:
         assert_eq!(result.supported_clients, vec!["hermes"]);
         assert_eq!(result.client_support_probes, vec![HERMES_PROBE]);
         assert_eq!(result.model, "gpt-5.5");
+    }
+
+    #[test]
+    fn detects_hermes_api_error_even_when_process_succeeds() {
+        let output = CommandRun {
+            status_success: true,
+            stdout: "API call failed after 3 retries: HTTP 404: Error code: 404 - {'error': '当前 API 不支持所选模型 gpt-5.5', 'type': 'error'}".to_string(),
+            stderr: String::new(),
+        };
+
+        let error = hermes_api_error_from_output(&output).unwrap();
+
+        assert!(error.contains("HTTP 404"));
+        assert!(error.contains("不支持所选模型"));
+    }
+
+    #[test]
+    fn accepts_clean_hermes_probe_output() {
+        let output = CommandRun {
+            status_success: true,
+            stdout: "OK".to_string(),
+            stderr: String::new(),
+        };
+
+        assert!(hermes_api_error_from_output(&output).is_none());
     }
 
     #[test]
