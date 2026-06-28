@@ -353,6 +353,9 @@ pub fn switch_key(id: String) -> Result<SwitchResult, String> {
 #[tauri::command]
 pub fn switch_key_client(id: String, client: String) -> Result<SwitchResult, String> {
     let client = normalize_client_id(&client)?;
+    if client == CLIENT_CODEX {
+        return switch_key(id);
+    }
 
     let store = KeydockStore::default();
     let api_key = store.secret(&id)?;
@@ -362,20 +365,11 @@ pub fn switch_key_client(id: String, client: String) -> Result<SwitchResult, Str
         .find(|item| item.id == id)
         .ok_or_else(|| "Key not found.".to_string())?;
     let model = selected_record_model(&record)?;
-    let check = validate_key_for_client(&api_key, &record, &client, &model);
-    let _ = store.mark_validation(&id, &check);
-    if !check.supported_clients.iter().any(|item| item == &client) {
-        let label = client_label(&client);
-        let detail = trim(&check.message);
-        return Err(if detail.is_empty() {
-            format!("{label} did not accept this key and model.")
-        } else {
-            format!("{label} did not accept this key and model. {detail}")
-        });
-    }
 
+    // Switching should be a deterministic local config update. Real API/client
+    // probes stay behind the explicit "Check" action so a downloaded GUI app
+    // without shell proxy variables or CLI probe access does not block switching.
     match client.as_str() {
-        CLIENT_CODEX => switch_key(id),
         CLIENT_HERMES => switch_key_for_hermes(&api_key, &record, &model),
         CLIENT_OPENCLAW => switch_key_for_openclaw(&api_key, &record, &model),
         _ => unreachable!(),
@@ -1738,7 +1732,16 @@ fn parse_scalar_value(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
     use uuid::Uuid;
+
+    fn restore_env_var(name: &str, value: Option<OsString>) {
+        if let Some(value) = value {
+            std::env::set_var(name, value);
+        } else {
+            std::env::remove_var(name);
+        }
+    }
 
     fn matching_profile() -> CodexProfile {
         CodexProfile {
@@ -1782,6 +1785,56 @@ mod tests {
             Some("https://new.sharedchat.cc/codex"),
             "gpt-5.5",
         ));
+    }
+
+    #[test]
+    fn codex_switch_writes_config_without_revalidating_client_support() {
+        let store_dir = std::env::temp_dir().join(format!("keydock-store-{}", Uuid::new_v4()));
+        let codex_dir = std::env::temp_dir().join(format!("keydock-codex-{}", Uuid::new_v4()));
+
+        let previous_store_dir = std::env::var_os("CKM_STORE_DIR");
+        let previous_codex_home = std::env::var_os("CODEX_HOME");
+        let previous_disable_restart = std::env::var_os("CKM_DISABLE_RESTART");
+        std::env::set_var("CKM_STORE_DIR", &store_dir);
+        std::env::set_var("CODEX_HOME", &codex_dir);
+        std::env::set_var("CKM_DISABLE_RESTART", "1");
+
+        let result = (|| {
+            let mut validation = ValidationResult::ok("Saved without client probes.", vec![]);
+            validation.model = "gpt-test-switch".to_string();
+            validation.supported_clients = Vec::new();
+            validation.client_support_probes = Vec::new();
+            let record = KeydockStore::default().add(
+                "Probe-free Codex",
+                "https://127.0.0.1:9/v1",
+                "sk-fake-switch-1111111111",
+                &validation,
+            )?;
+
+            let switched = switch_key_client(record.id.clone(), CLIENT_CODEX.to_string())?;
+            let profile = codex::read_codex_profile(Some(codex_dir.clone()));
+            let stored = KeydockStore::default()
+                .list()?
+                .into_iter()
+                .find(|item| item.id == record.id)
+                .ok_or_else(|| "Key not found after switch.".to_string())?;
+
+            assert_eq!(switched.base_url, "https://127.0.0.1:9/v1");
+            assert_eq!(profile.api_key, "sk-fake-switch-1111111111");
+            assert_eq!(profile.base_url, "https://127.0.0.1:9/v1");
+            assert_eq!(profile.model, "gpt-test-switch");
+            assert!(stored.active);
+            assert!(stored.supported_clients.is_empty());
+            Ok::<(), String>(())
+        })();
+
+        restore_env_var("CKM_STORE_DIR", previous_store_dir);
+        restore_env_var("CODEX_HOME", previous_codex_home);
+        restore_env_var("CKM_DISABLE_RESTART", previous_disable_restart);
+        let _ = fs::remove_dir_all(store_dir);
+        let _ = fs::remove_dir_all(codex_dir);
+
+        result.unwrap();
     }
 
     #[test]

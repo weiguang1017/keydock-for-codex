@@ -410,6 +410,20 @@ function t(key, values = {}) {
   return template.replace(/\{(\w+)\}/g, (_match, name) => values[name] ?? '');
 }
 
+function errorText(error, fallbackKey = 'actionFailed') {
+  if (typeof error === 'string') return error.trim() || t(fallbackKey);
+  if (error?.message) return String(error.message).trim() || t(fallbackKey);
+  if (error && typeof error === 'object') {
+    try {
+      const serialized = JSON.stringify(error);
+      if (serialized && serialized !== '{}') return serialized;
+    } catch (_ignored) {
+      // Fall through to the localized fallback.
+    }
+  }
+  return t(fallbackKey);
+}
+
 function formatDate(value) {
   if (!value) return t('never');
   const date = new Date(value);
@@ -806,7 +820,7 @@ async function withAction(message, action) {
     await refresh();
     return result;
   } catch (error) {
-    $('message').textContent = error.message || t('actionFailed');
+    $('message').textContent = errorText(error);
     return null;
   } finally {
     setBusy(false);
@@ -830,7 +844,7 @@ async function exportKeysToFile() {
     }
     $('message').textContent = t('exportDone', { count: result.count, path: result.path });
   } catch (error) {
-    $('message').textContent = t('exportFailed', { message: error.message || error });
+    $('message').textContent = t('exportFailed', { message: errorText(error) });
   } finally {
     setBusy(false);
   }
@@ -854,7 +868,7 @@ async function importKeysFromFile(event) {
       skipped: summary?.skipped ?? 0
     });
   } catch (error) {
-    $('message').textContent = t('importFailed', { message: error.message || error });
+    $('message').textContent = t('importFailed', { message: errorText(error) });
   } finally {
     setBusy(false);
   }
@@ -1040,7 +1054,7 @@ async function testDraftKey() {
     return result;
   } catch (error) {
     clearDraftValidation();
-    setAddStatus(error.message || t('testFailed'), 'bad');
+    setAddStatus(errorText(error, 'testFailed'), 'bad');
     return null;
   } finally {
     setBusy(false);
@@ -1159,7 +1173,7 @@ async function testEditKey() {
     return result;
   } catch (error) {
     clearEditValidation();
-    setEditStatus(error.message || t('testFailed'), 'bad');
+    setEditStatus(errorText(error, 'testFailed'), 'bad');
     return null;
   } finally {
     setBusy(false);

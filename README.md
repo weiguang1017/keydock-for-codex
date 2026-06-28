@@ -9,7 +9,7 @@ Keydock for Codex 是一款基于 Rust/Tauri 的桌面端 Codex API Key 管理�
 ### 它解决什么问题
 
 - 不再手动复制、粘贴、覆盖 Codex Key。
-- 切换前自动检查 Key 是否有效，避免切到不可用 Key。
+- 新增和手动检查时验证 Key 是否有效；切换时专注写入本地配置，避免实时网络探测失败阻断切换。
 - 切换后写入 `~/.codex/config.toml` 和 `~/.codex/auth.json`，让 Codex 使用新的 Base URL、模型和 API Key。
 - 多个 Key 可保存、命名、查看状态，并安全隐藏完整 Key。
 
@@ -19,7 +19,7 @@ Keydock for Codex 是一款基于 Rust/Tauri 的桌面端 Codex API Key 管理�
 - 支持英文、中文、日文界面，会自动匹配系统语言，也可以手动切换。
 - 新增 Key 时先校验，失败不保存。
 - 新增 Key 需要填写名称、Base URL、API Key，并在校验后显示平台返回的模型列表和可用状态。
-- 一键切换当前 Key，并尽量重启 Codex Desktop；如果自动重启失败，界面会提示手动重启。
+- 一键切换当前 Key，写入本地配置并尽量重启 Codex Desktop；如果自动重启失败，界面会提示手动重启。
 - Rust 端负责配置读写、Key 校验、本地存储和 Tauri 命令；Web UI 作为 Tauri 静态前端打包。
 
 ### 环境要求
@@ -112,7 +112,7 @@ Keydock for Codex is a Rust/Tauri desktop API key manager for Codex. It is built
 ### What It Solves
 
 - No more copying, pasting, or overwriting Codex keys by hand.
-- Keys are checked before switching, so broken keys are blocked early.
+- Keys are validated when added or checked manually; switching focuses on writing local config so transient probe failures do not block it.
 - Switching updates `~/.codex/config.toml` and `~/.codex/auth.json` so Codex uses the selected Base URL, model, and API key.
 - Multiple keys can be saved, named, checked, and shown safely with masking.
 
@@ -122,7 +122,7 @@ Keydock for Codex is a Rust/Tauri desktop API key manager for Codex. It is built
 - English, Chinese, and Japanese UI text with automatic system-language matching and a manual selector.
 - Validate a key before saving it.
 - Adding a key requires name, Base URL, and API key, then shows platform-provided models and availability status after validation.
-- Switch the active key and try to restart Codex Desktop; if automatic restart fails, the UI asks you to restart Codex manually.
+- Switch the active key, write the local config, and try to restart Codex Desktop; if automatic restart fails, the UI asks you to restart Codex manually.
 - Rust owns config IO, key validation, local storage, and Tauri commands; the Web UI is packaged as the Tauri static frontend.
 
 ### Requirements

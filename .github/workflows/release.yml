@@ -52,6 +52,9 @@ jobs:
             librsvg2-dev \
             patchelf
 
+      - name: Test Rust app
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked
 
