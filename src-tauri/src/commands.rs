@@ -21,6 +21,7 @@ const CLIENT_CODEX: &str = "codex";
 const CLIENT_OPENCLAW: &str = "openclaw";
 const CLIENT_HERMES: &str = "hermes";
 const CODEX_RESPONSES_PROBE: &str = "codex:responses";
+const CODEX_LOCAL_CONFIG_PROBE: &str = "codex:local_config";
 const OPENCLAW_CHAT_PROBE: &str = "openclaw:chat_completions";
 const CODEX_CLI_PROBE: &str = "codex:cli_exec";
 const HERMES_PROBE: &str = "hermes:cli_oneshot_custom_no_fallback_v2";
@@ -470,6 +471,9 @@ fn validate_key_for_client(
     remove_client_support(&mut merged, client);
 
     let probe = match client {
+        CLIENT_CODEX if codex_config_matches_record(api_key, record, model) => {
+            probe_codex_local_config_support(model)
+        }
         CLIENT_CODEX => probe_codex_client_support(api_key, Some(&record.base_url), model),
         CLIENT_OPENCLAW => probe_openclaw_client_support(api_key, Some(&record.base_url), model),
         CLIENT_HERMES => probe_hermes_client_support_result(api_key, Some(&record.base_url), model),
@@ -490,23 +494,17 @@ fn validate_key_for_client(
         } else {
             probe.status_code
         };
-        merged.message = supported_clients_display_message(&merged.supported_clients);
+        merged.message = format!("{} is supported.", client_label(client));
     } else {
         merged.status_code = probe.status_code;
         let detail = trim(&probe.message);
         let label = client_label(client);
+        let failure_head = client_failure_head(client, label);
         merged.message = if detail.is_empty() {
-            format!("{label} did not accept this key and model.")
+            failure_head
         } else {
-            format!("{label} did not accept this key and model. {detail}")
+            format!("{failure_head} {detail}")
         };
-        if !merged.supported_clients.is_empty() {
-            merged.message = format!(
-                "{} {}",
-                supported_clients_display_message(&merged.supported_clients),
-                merged.message
-            );
-        }
     }
     merged.valid = !merged.supported_clients.is_empty();
     if !trim(&probe.model).is_empty() {
@@ -559,18 +557,44 @@ fn probe_codex_client_support(
             result.supported_clients = Vec::new();
             result.client_support_probes = Vec::new();
             result.valid = false;
-            result.message = format!(
-                "Responses probe: {} Codex CLI probe: {}",
-                if responses_message.is_empty() {
-                    "failed.".to_string()
-                } else {
-                    responses_message
-                },
-                trim(error)
-            );
+            result.message = codex_probe_failure_message(&responses_message, &error);
             result
         }
     }
+}
+
+fn probe_codex_local_config_support(model: &str) -> ValidationResult {
+    let mut result = ValidationResult::ok(
+        "Codex is already configured to use this key and model.",
+        Vec::new(),
+    );
+    add_verified_client_support(&mut result, CLIENT_CODEX, CODEX_LOCAL_CONFIG_PROBE, model);
+    result
+}
+
+fn codex_config_matches_record(api_key: &str, record: &KeyRecord, model: &str) -> bool {
+    let profile = codex::read_codex_profile(None);
+    codex_profile_matches_record(&profile, api_key, record, model)
+}
+
+fn codex_profile_matches_record(
+    profile: &CodexProfile,
+    api_key: &str,
+    record: &KeyRecord,
+    model: &str,
+) -> bool {
+    codex_profile_matches_key(&profile, api_key, Some(&record.base_url), model)
+}
+
+fn codex_probe_failure_message(responses_message: &str, cli_error: &str) -> String {
+    let responses_message = trim(responses_message);
+    let responses_message = if responses_message.is_empty() {
+        "failed.".to_string()
+    } else {
+        responses_message
+    };
+    let cli_error = trim(cli_error);
+    format!("Responses API probe failed: {responses_message}. {cli_error}")
 }
 
 fn probe_openclaw_client_support(
@@ -935,6 +959,14 @@ fn client_label(client: &str) -> &'static str {
     }
 }
 
+fn client_failure_head(client: &str, label: &str) -> String {
+    if client == CLIENT_CODEX {
+        format!("{label} support could not be confirmed.")
+    } else {
+        format!("{label} did not accept this key and model.")
+    }
+}
+
 fn switch_key_for_hermes(
     api_key: &str,
     record: &KeyRecord,
@@ -985,6 +1017,7 @@ fn probe_codex_cli_support(
             Some("OpenAI".to_string()),
         )?;
         let mut command = Command::new(&codex_path);
+        cli::apply_command_path(&mut command, &cli::runtime_dirs_for_path(&codex_path));
         command
             .env("CODEX_HOME", &temp_dir)
             .args(codex_probe_args(&temp_dir, model));
@@ -992,7 +1025,7 @@ fn probe_codex_cli_support(
         if output.status_success {
             Ok(())
         } else {
-            Err(command_failure_message("Codex CLI probe failed.", &output))
+            Err(codex_cli_failure_message(&output))
         }
     })();
     let _ = fs::remove_dir_all(&temp_dir);
@@ -1075,6 +1108,7 @@ fn probe_hermes_client_support(
         )
         .map_err(|error| error.to_string())?;
         let mut command = Command::new(&hermes_path);
+        cli::apply_command_path(&mut command, &cli::runtime_dirs_for_path(&hermes_path));
         command
             .env("HERMES_HOME", &temp_dir)
             .env("HERMES_ACCEPT_HOOKS", "1")
@@ -1391,10 +1425,9 @@ fn openclaw_config_get_first(path: &Path, keys: &[&str]) -> Option<String> {
 }
 
 fn openclaw_config_get(path: &Path, key: &str) -> Option<String> {
-    let output = Command::new(path)
-        .args(["config", "get", key])
-        .output()
-        .ok()?;
+    let mut command = Command::new(path);
+    cli::apply_command_path(&mut command, &cli::runtime_dirs_for_path(path));
+    let output = command.args(["config", "get", key]).output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -1521,7 +1554,9 @@ struct CommandRun {
 }
 
 fn run_command(path: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new(path)
+    let mut command = Command::new(path);
+    cli::apply_command_path(&mut command, &cli::runtime_dirs_for_path(path));
+    let output = command
         .args(args)
         .output()
         .map_err(|error| error.to_string())?;
@@ -1540,7 +1575,9 @@ fn run_command(path: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 fn run_command_with_stdin(path: &Path, args: &[&str], stdin: &str) -> Result<CommandRun, String> {
-    let mut child = Command::new(path)
+    let mut command = Command::new(path);
+    cli::apply_command_path(&mut command, &cli::runtime_dirs_for_path(path));
+    let mut child = command
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1615,6 +1652,14 @@ fn command_failure_message(prefix: &str, output: &CommandRun) -> String {
         "No output was returned.".to_string()
     };
     format!("{prefix} {detail}")
+}
+
+fn codex_cli_failure_message(output: &CommandRun) -> String {
+    let combined = format!("{}\n{}", output.stderr, output.stdout).to_ascii_lowercase();
+    if combined.contains("env: node") && combined.contains("no such file") {
+        return "Codex CLI probe could not start because Node.js was not found in Keydock's app environment. This is a local CLI environment issue, not proof that Codex rejected the key.".to_string();
+    }
+    command_failure_message("Codex CLI probe failed.", output)
 }
 
 fn find_command_path(name: &str, env_var: &str, candidates: &[PathBuf]) -> Result<PathBuf, String> {
@@ -1798,6 +1843,7 @@ fn parse_scalar_value(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::now_iso;
     use std::ffi::OsString;
     use uuid::Uuid;
 
@@ -1827,6 +1873,31 @@ mod tests {
             masked_key: "sk-profile...1234".to_string(),
             message: String::new(),
             api_key: "sk-profile-1111111111".to_string(),
+        }
+    }
+
+    fn test_key_record(base_url: &str, model: &str) -> KeyRecord {
+        let timestamp = now_iso();
+        KeyRecord {
+            id: Uuid::new_v4().to_string(),
+            label: "Test key".to_string(),
+            base_url: base_url.to_string(),
+            masked_key: "sk-test...1111".to_string(),
+            model: model.to_string(),
+            models: vec![model.to_string()],
+            supported_clients: Vec::new(),
+            client_support_probes: Vec::new(),
+            active_clients: Vec::new(),
+            running_clients: Vec::new(),
+            client_support_checked_at: String::new(),
+            available: false,
+            status_code: 0,
+            validation_message: String::new(),
+            active: false,
+            source: String::new(),
+            last_validated_at: timestamp.clone(),
+            created_at: timestamp.clone(),
+            updated_at: timestamp,
         }
     }
 
@@ -1901,6 +1972,116 @@ mod tests {
         let _ = fs::remove_dir_all(codex_dir);
 
         result.unwrap();
+    }
+
+    #[test]
+    fn codex_client_check_can_use_matching_local_codex_profile() {
+        let record = test_key_record("https://new.sharedchat.cc/codex", "gpt-5.5");
+        let profile = matching_profile();
+
+        assert!(codex_profile_matches_record(
+            &profile,
+            "sk-profile-1111111111",
+            &record,
+            "gpt-5.5",
+        ));
+
+        let mut result = validation_from_record(&record, "gpt-5.5");
+        remove_client_support(&mut result, CLIENT_CODEX);
+        let probe = probe_codex_local_config_support("gpt-5.5");
+        for supported in probe.supported_clients {
+            result.supported_clients.push(supported);
+        }
+        for probe_name in probe.client_support_probes {
+            result.client_support_probes.push(probe_name);
+        }
+        result.supported_clients = normalize_supported_clients(result.supported_clients);
+        result.client_support_probes = unique_strings(result.client_support_probes);
+
+        assert!(result
+            .supported_clients
+            .iter()
+            .any(|item| item == CLIENT_CODEX));
+        assert_eq!(result.client_support_probes, vec![CODEX_LOCAL_CONFIG_PROBE]);
+    }
+
+    #[test]
+    fn client_specific_failure_message_does_not_report_other_supported_clients() {
+        let mut record = test_key_record("https://new.sharedchat.cc/codex", "gpt-5.5");
+        record.available = true;
+        record.supported_clients = vec![CLIENT_OPENCLAW.to_string()];
+        record.client_support_probes = vec![OPENCLAW_CHAT_PROBE.to_string()];
+        record.validation_message = "Supported clients: OpenClaw.".to_string();
+
+        let mut merged = validation_from_record(&record, "gpt-5.5");
+        remove_client_support(&mut merged, CLIENT_CODEX);
+        let probe = ValidationResult::fail(
+            200,
+            "Responses API probe failed: HTTP 200: HTML page.",
+            Vec::new(),
+        );
+        let detail = trim(&probe.message);
+        let label = client_label(CLIENT_CODEX);
+        let failure_head = client_failure_head(CLIENT_CODEX, label);
+        merged.message = format!("{failure_head} {detail}");
+
+        assert_eq!(
+            merged.message,
+            "Codex support could not be confirmed. Responses API probe failed: HTTP 200: HTML page."
+        );
+        assert!(!merged.message.contains("OpenClaw"));
+    }
+
+    #[test]
+    fn codex_check_message_does_not_report_previous_openclaw_support() {
+        let previous_skip_network = std::env::var_os("CKM_SKIP_NETWORK_VALIDATION_FOR_TESTS");
+        let previous_disable_cli = std::env::var_os("CKM_DISABLE_CODEX_CLI_PROBE");
+        std::env::remove_var("CKM_SKIP_NETWORK_VALIDATION_FOR_TESTS");
+        std::env::set_var("CKM_DISABLE_CODEX_CLI_PROBE", "1");
+
+        let mut record = test_key_record("http://127.0.0.1:9/v1", "gpt-5.5");
+        record.available = true;
+        record.supported_clients = vec![CLIENT_OPENCLAW.to_string()];
+        record.client_support_probes = vec![OPENCLAW_CHAT_PROBE.to_string()];
+        record.validation_message = "Supported clients: OpenClaw.".to_string();
+
+        let result =
+            validate_key_for_client("sk-fake-codex-1111111111", &record, CLIENT_CODEX, "gpt-5.5");
+
+        restore_env_var(
+            "CKM_SKIP_NETWORK_VALIDATION_FOR_TESTS",
+            previous_skip_network,
+        );
+        restore_env_var("CKM_DISABLE_CODEX_CLI_PROBE", previous_disable_cli);
+
+        assert!(result.valid);
+        assert!(result
+            .supported_clients
+            .iter()
+            .any(|item| item == CLIENT_OPENCLAW));
+        assert!(!result
+            .supported_clients
+            .iter()
+            .any(|item| item == CLIENT_CODEX));
+        assert!(result
+            .message
+            .starts_with("Codex support could not be confirmed."));
+        assert!(!result.message.contains("OpenClaw"));
+    }
+
+    #[test]
+    fn explains_codex_cli_node_missing_as_local_environment_issue() {
+        let output = CommandRun {
+            status_success: false,
+            stdout: String::new(),
+            stderr: "env: node: No such file or directory".to_string(),
+        };
+
+        let message = codex_cli_failure_message(&output);
+
+        assert!(message.contains("Node.js was not found"));
+        assert!(message.contains("local CLI environment"));
+        assert!(message.contains("not proof"));
     }
 
     #[test]

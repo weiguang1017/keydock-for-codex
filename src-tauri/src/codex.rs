@@ -185,6 +185,7 @@ pub fn apply_codex_profile(
     if !model.is_empty() {
         next_config = set_toml_value(&next_config, &[], "model", &model);
     }
+    next_config = set_toml_bool(&next_config, &[], "disable_response_storage", true);
     next_config = set_toml_value(
         &next_config,
         &["model_providers", &provider_name],
@@ -268,6 +269,24 @@ pub fn parse_codex_config(content: &str) -> ParsedCodexConfig {
 }
 
 pub fn set_toml_value(content: &str, section_path: &[&str], key: &str, value: &str) -> String {
+    set_toml_formatted_value(content, section_path, key, &format_toml_string(value))
+}
+
+pub fn set_toml_bool(content: &str, section_path: &[&str], key: &str, value: bool) -> String {
+    set_toml_formatted_value(
+        content,
+        section_path,
+        key,
+        if value { "true" } else { "false" },
+    )
+}
+
+fn set_toml_formatted_value(
+    content: &str,
+    section_path: &[&str],
+    key: &str,
+    formatted_value: &str,
+) -> String {
     let target_key = trim(key);
     let target_section = section_fingerprint(section_path.iter().copied());
     let is_root_target = section_path.is_empty();
@@ -283,7 +302,7 @@ pub fn set_toml_value(content: &str, section_path: &[&str], key: &str, value: &s
     if lines.is_empty() {
         lines.push(String::new());
     }
-    let formatted = format!("{target_key} = {}", format_toml_string(value));
+    let formatted = format!("{target_key} = {formatted_value}");
     let mut in_target = is_root_target;
     let mut section_found = is_root_target;
     let mut last_content_in_section: isize = -1;
@@ -549,6 +568,7 @@ fn value_string(value: &Value) -> Option<String> {
 fn default_config_template(provider: &str, base_url: &str) -> String {
     [
         format!("model_provider = {}", format_toml_string(provider)),
+        "disable_response_storage = true".to_string(),
         String::new(),
         format!("[model_providers.{provider}]"),
         format!("name = {}", format_toml_string(provider)),
@@ -633,5 +653,18 @@ mod tests {
             value_string(parsed.providers.get("OpenAI").unwrap().get("name").unwrap()).unwrap(),
             "OpenAI"
         );
+    }
+
+    #[test]
+    fn writes_disable_response_storage_for_codex_compatibility() {
+        let updated = set_toml_bool(
+            "model_provider = \"OpenAI\"\n[model_providers.OpenAI]\nbase_url = \"https://x\"\n",
+            &[],
+            "disable_response_storage",
+            true,
+        );
+
+        assert!(updated.contains("disable_response_storage = true"));
+        assert!(!updated.contains("\"true\""));
     }
 }

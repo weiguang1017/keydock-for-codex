@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -45,7 +46,9 @@ pub fn find_codex_path() -> Result<PathBuf, String> {
 }
 
 pub fn read_codex_login(codex_path: &PathBuf) -> Result<String, String> {
-    let output = Command::new(codex_path)
+    let mut command = Command::new(codex_path);
+    apply_command_path(&mut command, &runtime_dirs_for_path(codex_path));
+    let output = command
         .args(["login", "status"])
         .output()
         .map_err(|error| error.to_string())?;
@@ -58,6 +61,91 @@ pub fn read_codex_login(codex_path: &PathBuf) -> Result<String, String> {
         } else {
             stderr
         })
+    }
+}
+
+pub fn apply_command_path(command: &mut Command, extra_dirs: &[PathBuf]) {
+    if let Some(path) = command_path(extra_dirs) {
+        command.env("PATH", path);
+    }
+}
+
+pub fn runtime_dirs_for_path(path: &Path) -> Vec<PathBuf> {
+    path.parent()
+        .map(|parent| vec![parent.to_path_buf()])
+        .unwrap_or_default()
+}
+
+fn command_path(extra_dirs: &[PathBuf]) -> Option<OsString> {
+    let mut dirs = Vec::new();
+    push_dirs(&mut dirs, std::env::var_os("PATH"));
+    push_dirs(&mut dirs, login_shell_path());
+    for dir in extra_dirs {
+        push_dir(&mut dirs, dir.clone());
+    }
+    for dir in common_command_dirs() {
+        push_dir(&mut dirs, dir);
+    }
+    std::env::join_paths(dirs).ok()
+}
+
+fn push_dirs(dirs: &mut Vec<PathBuf>, value: Option<OsString>) {
+    if let Some(value) = value {
+        for dir in std::env::split_paths(&value) {
+            push_dir(dirs, dir);
+        }
+    }
+}
+
+fn push_dir(dirs: &mut Vec<PathBuf>, dir: PathBuf) {
+    if dir.as_os_str().is_empty() {
+        return;
+    }
+    if dirs.iter().any(|item| item == &dir) {
+        return;
+    }
+    dirs.push(dir);
+}
+
+fn common_command_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/usr/bin"),
+        PathBuf::from("/bin"),
+    ];
+    if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join(".local/bin"));
+        dirs.push(home.join(".hermes/node/bin"));
+        dirs.push(home.join(".nvm/current/bin"));
+    }
+    dirs
+}
+
+fn login_shell_path() -> Option<OsString> {
+    #[cfg(target_os = "windows")]
+    let output = Command::new("cmd.exe")
+        .args(["/c", "echo %PATH%"])
+        .output()
+        .ok()?;
+
+    #[cfg(not(target_os = "windows"))]
+    let output = {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        Command::new(shell)
+            .args(["-lc", "printf %s \"$PATH\""])
+            .output()
+            .ok()?
+    };
+
+    if !output.status.success() {
+        return None;
+    }
+    let value = trim(String::from_utf8_lossy(&output.stdout));
+    if value.is_empty() {
+        None
+    } else {
+        Some(OsString::from(value))
     }
 }
 
