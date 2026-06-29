@@ -21,10 +21,10 @@ const CLIENT_CODEX: &str = "codex";
 const CLIENT_OPENCLAW: &str = "openclaw";
 const CLIENT_HERMES: &str = "hermes";
 const CODEX_RESPONSES_PROBE: &str = "codex:responses";
-const CODEX_LOCAL_CONFIG_PROBE: &str = "codex:local_config";
 const OPENCLAW_CHAT_PROBE: &str = "openclaw:chat_completions";
 const CODEX_CLI_PROBE: &str = "codex:cli_exec";
 const HERMES_PROBE: &str = "hermes:cli_oneshot_custom_no_fallback_v2";
+const LEGACY_CODEX_LOCAL_CONFIG_PROBE: &str = "codex:local_config";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -471,9 +471,6 @@ fn validate_key_for_client(
     remove_client_support(&mut merged, client);
 
     let probe = match client {
-        CLIENT_CODEX if codex_config_matches_record(api_key, record, model) => {
-            probe_codex_local_config_support(model)
-        }
         CLIENT_CODEX => probe_codex_client_support(api_key, Some(&record.base_url), model),
         CLIENT_OPENCLAW => probe_openclaw_client_support(api_key, Some(&record.base_url), model),
         CLIENT_HERMES => probe_hermes_client_support_result(api_key, Some(&record.base_url), model),
@@ -561,29 +558,6 @@ fn probe_codex_client_support(
             result
         }
     }
-}
-
-fn probe_codex_local_config_support(model: &str) -> ValidationResult {
-    let mut result = ValidationResult::ok(
-        "Codex is already configured to use this key and model.",
-        Vec::new(),
-    );
-    add_verified_client_support(&mut result, CLIENT_CODEX, CODEX_LOCAL_CONFIG_PROBE, model);
-    result
-}
-
-fn codex_config_matches_record(api_key: &str, record: &KeyRecord, model: &str) -> bool {
-    let profile = codex::read_codex_profile(None);
-    codex_profile_matches_record(&profile, api_key, record, model)
-}
-
-fn codex_profile_matches_record(
-    profile: &CodexProfile,
-    api_key: &str,
-    record: &KeyRecord,
-    model: &str,
-) -> bool {
-    codex_profile_matches_key(&profile, api_key, Some(&record.base_url), model)
 }
 
 fn codex_probe_failure_message(responses_message: &str, cli_error: &str) -> String {
@@ -729,6 +703,24 @@ fn supported_clients_display_message(clients: &[String]) -> String {
 
 fn sanitize_supported_clients(records: &mut [KeyRecord]) {
     for record in records {
+        let had_legacy_codex_config_probe = record
+            .client_support_probes
+            .iter()
+            .any(|probe| probe == LEGACY_CODEX_LOCAL_CONFIG_PROBE);
+        if had_legacy_codex_config_probe
+            && !record
+                .client_support_probes
+                .iter()
+                .any(|probe| probe == CODEX_RESPONSES_PROBE || probe == CODEX_CLI_PROBE)
+        {
+            record
+                .supported_clients
+                .retain(|client| client != CLIENT_CODEX);
+        }
+        record
+            .client_support_probes
+            .retain(|probe| probe != LEGACY_CODEX_LOCAL_CONFIG_PROBE);
+
         let has_verified_hermes = record
             .client_support_probes
             .iter()
@@ -1975,34 +1967,89 @@ mod tests {
     }
 
     #[test]
-    fn codex_client_check_can_use_matching_local_codex_profile() {
+    fn codex_client_check_does_not_treat_matching_local_config_as_support() {
+        let codex_dir = std::env::temp_dir().join(format!("keydock-codex-{}", Uuid::new_v4()));
+        let previous_codex_home = std::env::var_os("CODEX_HOME");
+        let previous_skip_network = std::env::var_os("CKM_SKIP_NETWORK_VALIDATION_FOR_TESTS");
+        let previous_disable_cli = std::env::var_os("CKM_DISABLE_CODEX_CLI_PROBE");
+        std::env::set_var("CODEX_HOME", &codex_dir);
+        std::env::remove_var("CKM_SKIP_NETWORK_VALIDATION_FOR_TESTS");
+        std::env::set_var("CKM_DISABLE_CODEX_CLI_PROBE", "1");
+
+        let result = (|| {
+            let record = test_key_record("http://127.0.0.1:9/v1", "gpt-5.5");
+            codex::apply_codex_profile(
+                Some(codex_dir.clone()),
+                "sk-profile-1111111111",
+                &record.base_url,
+                &record.model,
+                Some("OpenAI".to_string()),
+            )?;
+
+            let check =
+                validate_key_for_client("sk-profile-1111111111", &record, CLIENT_CODEX, "gpt-5.5");
+
+            assert!(!check.valid);
+            assert!(!check
+                .supported_clients
+                .iter()
+                .any(|item| item == CLIENT_CODEX));
+            assert!(check
+                .message
+                .starts_with("Codex support could not be confirmed."));
+            assert!(check.message.contains("Responses API probe failed"));
+            Ok::<(), String>(())
+        })();
+
+        restore_env_var("CODEX_HOME", previous_codex_home);
+        restore_env_var(
+            "CKM_SKIP_NETWORK_VALIDATION_FOR_TESTS",
+            previous_skip_network,
+        );
+        restore_env_var("CKM_DISABLE_CODEX_CLI_PROBE", previous_disable_cli);
+        let _ = fs::remove_dir_all(codex_dir);
+
+        result.unwrap();
+    }
+
+    #[test]
+    fn matching_local_codex_profile_still_marks_active_state() {
         let record = test_key_record("https://new.sharedchat.cc/codex", "gpt-5.5");
         let profile = matching_profile();
 
-        assert!(codex_profile_matches_record(
+        assert!(codex_profile_matches_key(
             &profile,
             "sk-profile-1111111111",
-            &record,
+            Some(&record.base_url),
             "gpt-5.5",
         ));
+    }
 
-        let mut result = validation_from_record(&record, "gpt-5.5");
-        remove_client_support(&mut result, CLIENT_CODEX);
-        let probe = probe_codex_local_config_support("gpt-5.5");
-        for supported in probe.supported_clients {
-            result.supported_clients.push(supported);
-        }
-        for probe_name in probe.client_support_probes {
-            result.client_support_probes.push(probe_name);
-        }
-        result.supported_clients = normalize_supported_clients(result.supported_clients);
-        result.client_support_probes = unique_strings(result.client_support_probes);
+    #[test]
+    fn sanitize_supported_clients_removes_legacy_codex_local_config_support() {
+        let mut record = test_key_record("https://new.sharedchat.cc/codex", "gpt-5.5");
+        record.supported_clients = vec![CLIENT_CODEX.to_string()];
+        record.client_support_probes = vec![LEGACY_CODEX_LOCAL_CONFIG_PROBE.to_string()];
 
-        assert!(result
-            .supported_clients
-            .iter()
-            .any(|item| item == CLIENT_CODEX));
-        assert_eq!(result.client_support_probes, vec![CODEX_LOCAL_CONFIG_PROBE]);
+        sanitize_supported_clients(std::slice::from_mut(&mut record));
+
+        assert!(record.supported_clients.is_empty());
+        assert!(record.client_support_probes.is_empty());
+    }
+
+    #[test]
+    fn sanitize_supported_clients_keeps_verified_codex_probe() {
+        let mut record = test_key_record("https://new.sharedchat.cc/codex", "gpt-5.5");
+        record.supported_clients = vec![CLIENT_CODEX.to_string()];
+        record.client_support_probes = vec![
+            LEGACY_CODEX_LOCAL_CONFIG_PROBE.to_string(),
+            CODEX_RESPONSES_PROBE.to_string(),
+        ];
+
+        sanitize_supported_clients(std::slice::from_mut(&mut record));
+
+        assert_eq!(record.supported_clients, vec![CLIENT_CODEX]);
+        assert_eq!(record.client_support_probes, vec![CODEX_RESPONSES_PROBE]);
     }
 
     #[test]

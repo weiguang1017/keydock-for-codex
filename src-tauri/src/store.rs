@@ -298,8 +298,8 @@ impl KeydockStore {
                 active_clients: Vec::new(),
                 running_clients: Vec::new(),
                 client_support_checked_at: String::new(),
-                available: true,
-                status_code: 200,
+                available: false,
+                status_code: 0,
                 validation_message: if profile.message.is_empty() {
                     "Codex is configured to use this key.".to_string()
                 } else {
@@ -307,7 +307,7 @@ impl KeydockStore {
                 },
                 active: false,
                 source: "codex-config".to_string(),
-                last_validated_at: timestamp.clone(),
+                last_validated_at: String::new(),
                 created_at: timestamp.clone(),
                 updated_at: timestamp.clone(),
             };
@@ -662,8 +662,11 @@ fn default_supported_clients() -> Vec<String> {
 }
 
 fn mark_codex_configured(record: &mut KeyRecord, timestamp: &str) {
-    record.available = true;
-    record.status_code = 200;
+    if record.supported_clients.is_empty() {
+        record.available = false;
+        record.status_code = 0;
+        record.last_validated_at = String::new();
+    }
     if record.validation_message.is_empty()
         || record
             .validation_message
@@ -675,9 +678,7 @@ fn mark_codex_configured(record: &mut KeyRecord, timestamp: &str) {
     {
         record.validation_message = "Codex is configured to use this key.".to_string();
     }
-    if record.last_validated_at.is_empty() {
-        record.last_validated_at = timestamp.to_string();
-    }
+    record.updated_at = timestamp.to_string();
 }
 
 fn ensure_parent(path: &Path) -> Result<(), String> {
@@ -817,7 +818,7 @@ mod tests {
     }
 
     #[test]
-    fn marks_codex_profile_as_codex_client_configured() {
+    fn marks_codex_profile_as_configured_without_marking_available() {
         let dir = std::env::temp_dir().join(format!("keydock-codex-profile-{}", Uuid::new_v4()));
         let store = KeydockStore::new(&dir);
         let profile = CodexProfile {
@@ -842,16 +843,65 @@ mod tests {
         let record = store.upsert_codex_profile(&profile).unwrap().unwrap();
 
         assert!(record.active);
-        assert!(record.available);
-        assert_eq!(record.status_code, 200);
+        assert!(!record.available);
+        assert_eq!(record.status_code, 0);
         assert!(record.supported_clients.is_empty());
         assert!(record.client_support_probes.is_empty());
         assert!(record.client_support_checked_at.is_empty());
-        assert!(!record.last_validated_at.is_empty());
+        assert!(record.last_validated_at.is_empty());
         assert_eq!(
             record.validation_message,
             "Codex is configured to use this key."
         );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn codex_profile_sync_preserves_real_validation_state() {
+        let dir =
+            std::env::temp_dir().join(format!("keydock-codex-profile-verified-{}", Uuid::new_v4()));
+        let store = KeydockStore::new(&dir);
+        let mut validation = ValidationResult::ok("Supported clients: Codex.", vec![]);
+        validation.model = "gpt-5.5".to_string();
+        validation.supported_clients = vec!["codex".to_string()];
+        validation.client_support_probes = vec!["codex:responses".to_string()];
+        let saved = store
+            .add(
+                "Verified",
+                "https://new.sharedchat.cc/codex",
+                "sk-profile-1111111111",
+                &validation,
+            )
+            .unwrap();
+        let profile = CodexProfile {
+            directory: String::new(),
+            config_path: String::new(),
+            auth_path: String::new(),
+            has_directory: true,
+            has_config: true,
+            has_auth: true,
+            configured: true,
+            label: "Codex OpenAI".to_string(),
+            provider_name: "OpenAI".to_string(),
+            base_url: "https://new.sharedchat.cc/codex".to_string(),
+            has_provider_base_url: true,
+            model: "gpt-5.5".to_string(),
+            models: vec![],
+            masked_key: "sk-test...1234".to_string(),
+            message: String::new(),
+            api_key: "sk-profile-1111111111".to_string(),
+        };
+
+        let record = store.upsert_codex_profile(&profile).unwrap().unwrap();
+
+        assert_eq!(record.id, saved.id);
+        assert!(record.active);
+        assert!(record.available);
+        assert_eq!(record.status_code, 200);
+        assert_eq!(record.supported_clients, vec!["codex"]);
+        assert_eq!(record.client_support_probes, vec!["codex:responses"]);
+        assert!(!record.client_support_checked_at.is_empty());
+        assert!(!record.last_validated_at.is_empty());
         let _ = fs::remove_dir_all(dir);
     }
 

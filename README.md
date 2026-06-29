@@ -83,7 +83,7 @@ src-tauri/target/release/bundle/
 - `cargo build --release`
 - `cargo tauri build --bundles app`（macOS）或对应平台的 Tauri bundle 目标
 
-构建结果在 GitHub 仓库的 `Actions` 页面下载。打 tag（例如 `v1.2.0`）会触发 release workflow，并把 Tauri bundle 产物上传到 GitHub Release。
+构建结果在 GitHub 仓库的 `Actions` 页面下载。打 tag（例如 `v1.2.1`）会触发 release workflow，并把 Tauri bundle 产物上传到 GitHub Release。
 
 ### macOS 首次打开（未签名应用）
 
@@ -186,7 +186,7 @@ Pushes to `main` and pull requests run GitHub Actions on macOS, Windows, and Lin
 - `cargo build --release`
 - `cargo tauri build --bundles app` on macOS, or the matching Tauri bundle target for each platform
 
-Artifacts are available from the repository's `Actions` page. Tags such as `v1.2.0` trigger the release workflow and upload Tauri bundle outputs to GitHub Release.
+Artifacts are available from the repository's `Actions` page. Tags such as `v1.2.1` trigger the release workflow and upload Tauri bundle outputs to GitHub Release.
 
 ### Opening on macOS (Unsigned App)
 
