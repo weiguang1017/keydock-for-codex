@@ -22,6 +22,7 @@ pub fn run() {
             commands::delete_key,
             commands::validate_key_cmd,
             commands::validate_key_client_cmd,
+            commands::validate_all_key_clients_cmd,
             commands::switch_key,
             commands::switch_key_client,
             commands::diagnostics,

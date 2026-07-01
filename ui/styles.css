@@ -266,6 +266,14 @@ code {
   border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
 }
 
+.active-card.pending {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+}
+
+.active-card.bad {
+  border-color: color-mix(in srgb, var(--bad) 40%, var(--border));
+}
+
 .active-top {
   display: flex;
   align-items: center;
@@ -281,7 +289,9 @@ code {
 .active-name {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 9px;
+  min-width: 0;
 }
 
 .active-name strong {
@@ -289,9 +299,23 @@ code {
 }
 
 .active-status {
+  flex: none;
   color: var(--ok);
   font-size: 13px;
   font-weight: 600;
+  white-space: nowrap;
+}
+
+.active-status.pending {
+  color: var(--accent);
+}
+
+.active-status.bad {
+  color: var(--bad);
+}
+
+.active-status.idle {
+  color: var(--muted);
 }
 
 .active-grid {
@@ -444,8 +468,27 @@ code {
   opacity: 0.48;
 }
 
+.client-icon.unchecked {
+  background: var(--surface);
+  opacity: 0.74;
+}
+
+.client-icon.checking {
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  opacity: 1;
+}
+
 .client-icon.unsupported img {
   filter: grayscale(1) saturate(0.35);
+}
+
+.client-icon.checking img {
+  filter: grayscale(0.45) saturate(0.8);
+}
+
+.client-icon.unchecked img {
+  filter: grayscale(0.85) saturate(0.6);
 }
 
 .client-icon.supported {
@@ -510,6 +553,7 @@ button.client-icon:hover:not(:disabled) {
 .status-line.ok { color: var(--ok); }
 .status-line.bad { color: var(--bad); }
 .status-line.idle { color: var(--muted); }
+.status-line.pending { color: var(--accent); }
 
 .card-actions {
   display: flex;
@@ -537,6 +581,7 @@ button.client-icon:hover:not(:disabled) {
 .dot.ok { background: var(--ok); }
 .dot.bad { background: var(--bad); }
 .dot.idle { background: var(--muted); }
+.dot.pending { background: var(--accent); }
 
 .badge {
   padding: 2px 7px;
@@ -633,6 +678,7 @@ button {
   border-radius: 8px;
   background: var(--surface);
   cursor: pointer;
+  white-space: nowrap;
 }
 
 button:hover:not(:disabled) {
@@ -766,14 +812,18 @@ label span {
   background: var(--surface-2);
   font-size: 13px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
+  min-width: 0;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .dialog-status::before {
   content: "";
   width: 8px;
   height: 8px;
+  margin-top: 5px;
   border-radius: 50%;
   flex: none;
   background: var(--muted);
@@ -824,6 +874,26 @@ menu {
     flex-direction: column;
     align-items: flex-start;
     gap: 10px;
+    padding: 14px 20px;
+  }
+  .topbar-tools {
+    display: grid;
+    width: 100%;
+    grid-template-columns: 1fr 1fr minmax(96px, 1.25fr);
+    gap: 8px;
+  }
+  .language-picker {
+    grid-column: 1 / -1;
+    justify-content: space-between;
+    width: 100%;
+    white-space: nowrap;
+  }
+  .language-picker select {
+    width: 132px;
+  }
+  .ghost-btn,
+  .add-btn {
+    width: 100%;
   }
   .search-box input {
     width: 160px;

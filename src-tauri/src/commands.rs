@@ -60,6 +60,16 @@ pub struct Diagnostics {
     pub codex_cli_available: bool,
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartupValidationSummary {
+    pub checked_keys: usize,
+    pub checked_clients: usize,
+    pub supported_clients: usize,
+    pub failed_keys: usize,
+    pub skipped_keys: usize,
+}
+
 #[tauri::command]
 pub fn list_keys() -> Result<Vec<KeyRecord>, String> {
     let store = KeydockStore::default();
@@ -75,6 +85,13 @@ pub fn list_keys() -> Result<Vec<KeyRecord>, String> {
     annotate_active_clients(&store, &mut records, codex_profile.as_ref());
     sanitize_supported_clients(&mut records);
     Ok(records)
+}
+
+#[tauri::command]
+pub fn validate_all_key_clients_cmd() -> Result<StartupValidationSummary, String> {
+    let store = KeydockStore::default();
+    let _ = sync_codex_profile(&store);
+    validate_all_key_clients(&store)
 }
 
 #[tauri::command]
@@ -453,12 +470,55 @@ fn validate_key_with_client_probes(
         add_verified_client_support(&mut result, CLIENT_CODEX, CODEX_CLI_PROBE, &probe_model);
     }
 
-    if probe_hermes_client_support(api_key, base_url, &probe_model).is_ok() {
-        add_verified_client_support(&mut result, CLIENT_HERMES, HERMES_PROBE, &probe_model);
-    } else {
-        sanitize_hermes_client_support(&mut result);
+    match probe_hermes_client_support(api_key, base_url, &probe_model) {
+        Ok(()) => {
+            add_verified_client_support(&mut result, CLIENT_HERMES, HERMES_PROBE, &probe_model);
+        }
+        Err(error) => {
+            set_client_message(
+                &mut result,
+                CLIENT_HERMES,
+                client_failure_message(CLIENT_HERMES, &error),
+            );
+            sanitize_hermes_client_support(&mut result);
+        }
     }
     result
+}
+
+fn validate_all_key_clients(store: &KeydockStore) -> Result<StartupValidationSummary, String> {
+    let mut summary = StartupValidationSummary::default();
+    let records = store.list()?;
+
+    for record in records {
+        let api_key = match store.secret(&record.id) {
+            Ok(api_key) => api_key,
+            Err(_) => {
+                summary.skipped_keys += 1;
+                continue;
+            }
+        };
+        let model = if trim(&record.model).is_empty() {
+            record.models.first().cloned().unwrap_or_default()
+        } else {
+            record.model.clone()
+        };
+        let check = validate_key_with_client_probes(&api_key, Some(&record.base_url), &model);
+        store.mark_validation(&record.id, &check)?;
+
+        summary.checked_keys += 1;
+        summary.checked_clients += all_client_ids().len();
+        summary.supported_clients += check.supported_clients.len();
+        if check.supported_clients.is_empty() {
+            summary.failed_keys += 1;
+        }
+    }
+
+    Ok(summary)
+}
+
+fn all_client_ids() -> [&'static str; 3] {
+    [CLIENT_CODEX, CLIENT_OPENCLAW, CLIENT_HERMES]
 }
 
 fn validate_key_for_client(
@@ -492,6 +552,8 @@ fn validate_key_for_client(
             probe.status_code
         };
         merged.message = format!("{} is supported.", client_label(client));
+        let client_message = merged.message.clone();
+        set_client_message(&mut merged, client, client_message);
     } else {
         merged.status_code = probe.status_code;
         let detail = trim(&probe.message);
@@ -502,8 +564,10 @@ fn validate_key_for_client(
         } else {
             format!("{failure_head} {detail}")
         };
+        let client_message = merged.message.clone();
+        set_client_message(&mut merged, client, client_message);
     }
-    merged.valid = !merged.supported_clients.is_empty();
+    merged.valid = client_supported;
     if !trim(&probe.model).is_empty() {
         merged.model = trim(&probe.model);
     }
@@ -527,6 +591,19 @@ fn validation_from_record(record: &KeyRecord, model: &str) -> ValidationResult {
     result.model = trim(model);
     result.supported_clients = normalize_supported_clients(record.supported_clients.clone());
     result.client_support_probes = unique_strings(record.client_support_probes.clone());
+    result.client_messages = record.client_messages.clone();
+    for client in result.supported_clients.clone() {
+        if !result.client_messages.contains_key(&client) {
+            set_client_message(
+                &mut result,
+                client.clone(),
+                format!(
+                    "{} accepted this key on the previous probe.",
+                    client_label(&client)
+                ),
+            );
+        }
+    }
     sanitize_hermes_client_support(&mut result);
     result
 }
@@ -660,7 +737,35 @@ fn add_verified_client_support(
         result.valid = true;
         result.status_code = 200;
     }
+    set_client_message(
+        result,
+        client_id,
+        format!("{} is supported.", client_label(client_id)),
+    );
     result.message = supported_clients_display_message(&result.supported_clients);
+}
+
+fn set_client_message(
+    result: &mut ValidationResult,
+    client_id: impl Into<String>,
+    message: impl Into<String>,
+) {
+    let client_id = trim(client_id.into()).to_ascii_lowercase();
+    let message = trim(message.into());
+    if client_id.is_empty() || message.is_empty() {
+        return;
+    }
+    result.client_messages.insert(client_id, message);
+}
+
+fn client_failure_message(client: &str, detail: &str) -> String {
+    let label = client_label(client);
+    let detail = trim(detail);
+    if detail.is_empty() {
+        format!("{label} did not accept this key and model.")
+    } else {
+        format!("{label} did not accept this key and model. {detail}")
+    }
 }
 
 fn sanitize_hermes_client_support(result: &mut ValidationResult) {
@@ -1837,7 +1942,23 @@ mod tests {
     use super::*;
     use crate::store::now_iso;
     use std::ffi::OsString;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, MutexGuard, OnceLock,
+    };
+    use std::thread::{self, JoinHandle};
     use uuid::Uuid;
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn env_guard() -> MutexGuard<'static, ()> {
+        ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     fn restore_env_var(name: &str, value: Option<OsString>) {
         if let Some(value) = value {
@@ -1879,6 +2000,7 @@ mod tests {
             models: vec![model.to_string()],
             supported_clients: Vec::new(),
             client_support_probes: Vec::new(),
+            client_messages: HashMap::new(),
             active_clients: Vec::new(),
             running_clients: Vec::new(),
             client_support_checked_at: String::new(),
@@ -1891,6 +2013,131 @@ mod tests {
             created_at: timestamp.clone(),
             updated_at: timestamp,
         }
+    }
+
+    fn start_probe_server() -> (String, Arc<AtomicBool>, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = Arc::clone(&stop);
+        let handle = thread::spawn(move || {
+            while !stop_thread.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => handle_probe_request(&mut stream),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        (base_url, stop, handle)
+    }
+
+    fn handle_probe_request(stream: &mut std::net::TcpStream) {
+        let mut buffer = [0_u8; 8192];
+        let read = stream.read(&mut buffer).unwrap_or(0);
+        let request = String::from_utf8_lossy(&buffer[..read]);
+        let (status, body) = if request.starts_with("GET /v1/models ") {
+            ("200 OK", r#"{"data":[{"id":"gpt-startup-check"}]}"#)
+        } else if request.starts_with("POST /v1/responses ") {
+            (
+                "200 OK",
+                r#"{"id":"resp_startup_check","object":"response","output":[]}"#,
+            )
+        } else if request.starts_with("POST /v1/chat/completions ") {
+            (
+                "200 OK",
+                r#"{"id":"chatcmpl-startup-check","object":"chat.completion","choices":[]}"#,
+            )
+        } else {
+            ("404 Not Found", r#"{"error":{"message":"not found"}}"#)
+        };
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(response.as_bytes());
+    }
+
+    #[test]
+    fn startup_validation_checks_every_saved_key_against_clients() {
+        let _env = env_guard();
+        let dir = std::env::temp_dir().join(format!("keydock-startup-{}", Uuid::new_v4()));
+        let previous_disable_hermes = std::env::var_os("CKM_DISABLE_HERMES_PROBE");
+        std::env::set_var("CKM_DISABLE_HERMES_PROBE", "1");
+        let (base_url, stop, handle) = start_probe_server();
+
+        let result = (|| {
+            let store = KeydockStore::new(&dir);
+            let mut validation = ValidationResult::ok("Saved before startup check.", Vec::new());
+            validation.model = "gpt-startup-check".to_string();
+
+            for (label, api_key) in [
+                ("Startup One", "sk-startup-one-1111111111"),
+                ("Startup Two", "sk-startup-two-2222222222"),
+            ] {
+                let record = store.add(label, &base_url, api_key, &validation)?;
+                store.update_metadata(
+                    &record.id,
+                    MetadataUpdate {
+                        available: Some(false),
+                        supported_clients: Some(Vec::new()),
+                        client_support_probes: Some(Vec::new()),
+                        client_support_checked_at: Some(String::new()),
+                        last_validated_at: Some(String::new()),
+                        validation_message: Some("Waiting for startup check.".to_string()),
+                        ..MetadataUpdate::default()
+                    },
+                )?;
+            }
+
+            let summary = validate_all_key_clients(&store)?;
+            assert_eq!(summary.checked_keys, 2);
+            assert_eq!(summary.checked_clients, 2 * all_client_ids().len());
+            assert_eq!(summary.skipped_keys, 0);
+            assert_eq!(summary.failed_keys, 0);
+            assert_eq!(summary.supported_clients, 4);
+
+            let records = store.list()?;
+            assert_eq!(records.len(), 2);
+            for record in records {
+                assert!(record.available);
+                assert!(!record.client_support_checked_at.is_empty());
+                assert!(!record.last_validated_at.is_empty());
+                assert_eq!(record.model, "gpt-startup-check");
+                assert!(record
+                    .supported_clients
+                    .iter()
+                    .any(|client| client == CLIENT_CODEX));
+                assert!(record
+                    .supported_clients
+                    .iter()
+                    .any(|client| client == CLIENT_OPENCLAW));
+                assert!(!record
+                    .supported_clients
+                    .iter()
+                    .any(|client| client == CLIENT_HERMES));
+                assert!(record
+                    .client_support_probes
+                    .iter()
+                    .any(|probe| probe == CODEX_RESPONSES_PROBE));
+                assert!(record
+                    .client_support_probes
+                    .iter()
+                    .any(|probe| probe == OPENCLAW_CHAT_PROBE));
+            }
+
+            Ok::<(), String>(())
+        })();
+
+        stop.store(true, Ordering::Relaxed);
+        let _ = handle.join();
+        restore_env_var("CKM_DISABLE_HERMES_PROBE", previous_disable_hermes);
+        let _ = fs::remove_dir_all(dir);
+
+        result.unwrap();
     }
 
     #[test]
@@ -1918,6 +2165,7 @@ mod tests {
 
     #[test]
     fn codex_switch_writes_config_without_revalidating_client_support() {
+        let _env = env_guard();
         let store_dir = std::env::temp_dir().join(format!("keydock-store-{}", Uuid::new_v4()));
         let codex_dir = std::env::temp_dir().join(format!("keydock-codex-{}", Uuid::new_v4()));
 
@@ -1939,6 +2187,17 @@ mod tests {
                 "sk-fake-switch-1111111111",
                 &validation,
             )?;
+            KeydockStore::default().update_metadata(
+                &record.id,
+                MetadataUpdate {
+                    available: Some(false),
+                    supported_clients: Some(Vec::new()),
+                    client_support_checked_at: Some(String::new()),
+                    last_validated_at: Some(String::new()),
+                    validation_message: Some("Configured locally.".to_string()),
+                    ..MetadataUpdate::default()
+                },
+            )?;
 
             let switched = switch_key_client(record.id.clone(), CLIENT_CODEX.to_string())?;
             let profile = codex::read_codex_profile(Some(codex_dir.clone()));
@@ -1953,7 +2212,10 @@ mod tests {
             assert_eq!(profile.base_url, "https://127.0.0.1:9/v1");
             assert_eq!(profile.model, "gpt-test-switch");
             assert!(stored.active);
+            assert!(!stored.available);
             assert!(stored.supported_clients.is_empty());
+            assert!(stored.client_support_checked_at.is_empty());
+            assert!(stored.last_validated_at.is_empty());
             Ok::<(), String>(())
         })();
 
@@ -1968,6 +2230,7 @@ mod tests {
 
     #[test]
     fn codex_client_check_does_not_treat_matching_local_config_as_support() {
+        let _env = env_guard();
         let codex_dir = std::env::temp_dir().join(format!("keydock-codex-{}", Uuid::new_v4()));
         let previous_codex_home = std::env::var_os("CODEX_HOME");
         let previous_skip_network = std::env::var_os("CKM_SKIP_NETWORK_VALIDATION_FOR_TESTS");
@@ -2058,6 +2321,10 @@ mod tests {
         record.available = true;
         record.supported_clients = vec![CLIENT_OPENCLAW.to_string()];
         record.client_support_probes = vec![OPENCLAW_CHAT_PROBE.to_string()];
+        record.client_messages.insert(
+            CLIENT_OPENCLAW.to_string(),
+            "OpenClaw accepted this key on the previous probe.".to_string(),
+        );
         record.validation_message = "Supported clients: OpenClaw.".to_string();
 
         let mut merged = validation_from_record(&record, "gpt-5.5");
@@ -2080,7 +2347,8 @@ mod tests {
     }
 
     #[test]
-    fn codex_check_message_does_not_report_previous_openclaw_support() {
+    fn codex_check_failure_is_not_valid_even_with_previous_openclaw_support() {
+        let _env = env_guard();
         let previous_skip_network = std::env::var_os("CKM_SKIP_NETWORK_VALIDATION_FOR_TESTS");
         let previous_disable_cli = std::env::var_os("CKM_DISABLE_CODEX_CLI_PROBE");
         std::env::remove_var("CKM_SKIP_NETWORK_VALIDATION_FOR_TESTS");
@@ -2101,7 +2369,7 @@ mod tests {
         );
         restore_env_var("CKM_DISABLE_CODEX_CLI_PROBE", previous_disable_cli);
 
-        assert!(result.valid);
+        assert!(!result.valid);
         assert!(result
             .supported_clients
             .iter()
@@ -2114,6 +2382,17 @@ mod tests {
             .message
             .starts_with("Codex support could not be confirmed."));
         assert!(!result.message.contains("OpenClaw"));
+        assert_eq!(
+            result
+                .client_messages
+                .get(CLIENT_OPENCLAW)
+                .map(String::as_str),
+            Some("OpenClaw accepted this key on the previous probe.")
+        );
+        assert_eq!(
+            result.client_messages.get(CLIENT_CODEX).map(String::as_str),
+            Some(result.message.as_str())
+        );
     }
 
     #[test]
@@ -2183,6 +2462,7 @@ model:
 
     #[test]
     fn ignores_process_env_for_implicit_hermes_openai_key() {
+        let _env = env_guard();
         let dir =
             std::env::temp_dir().join(format!("keydock-hermes-process-env-{}", Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();

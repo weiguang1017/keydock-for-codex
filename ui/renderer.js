@@ -32,6 +32,7 @@ if (!window.keydock && typeof tauriInvoke === 'function') {
     deleteKey: ({ id }) => tauriInvoke('delete_key', { id }),
     validateKey: ({ id }) => tauriInvoke('validate_key_cmd', { id }),
     validateKeyClient: ({ id, client }) => tauriInvoke('validate_key_client_cmd', { id, client }),
+    validateAllKeyClients: () => tauriInvoke('validate_all_key_clients_cmd'),
     switchKey: ({ id }) => tauriInvoke('switch_key', { id }),
     switchKeyClient: ({ id, client }) => tauriInvoke('switch_key_client', { id, client }),
     diagnostics: () => tauriInvoke('diagnostics')
@@ -49,6 +50,9 @@ const CLIENT_OPTIONS = [
 
 const clientFilters = new Set();
 const selectedClients = new Map();
+const startupClientChecks = new Map();
+const startupProbeKeys = new Set();
+let startupAutoCheckRunning = false;
 
 const translations = {
   en: {
@@ -66,11 +70,13 @@ const translations = {
     emptyTitle: 'Add your first key',
     emptyHint: 'No saved keys were found. Add one to start switching quickly.',
     activeBadge: 'ACTIVE',
+    configuredBadge: 'CONFIGURED',
+    networkVerifiedBadge: 'NETWORK VERIFIED',
+    networkUnverifiedBadge: 'NETWORK UNVERIFIED',
     modelsBadge: '{count} models',
     currentActive: 'Current key',
     allKeys: 'All keys',
     filterByClient: 'Filter keys by supported client',
-    activeFromConfig: 'Detected from ~/.codex',
     noActiveTitle: 'No Codex key configured',
     language: 'Language',
     searchKeys: 'Search keys',
@@ -107,7 +113,10 @@ const translations = {
     activeInCodexConfig: 'In use · written to config',
     activeClientsRunning: 'In use · {clients} running',
     activeClientsConfig: 'In use · {clients} configured',
+    configuredInCodexUnverified: 'Configured in Codex · network not verified',
+    activeNetworkUnverified: 'In use · network not verified',
     notChecked: 'Not checked',
+    notNetworkVerified: 'Network not verified',
     noModels: 'No models reported yet',
     keyWillBeChecked: 'Test the key to load available models, then add it to Keydock.',
     footerMessage: 'Terminal Codex sessions must be reopened after switching.',
@@ -116,11 +125,18 @@ const translations = {
     testPassed: 'Key is valid. Models loaded.',
     testFailed: 'Key test failed.',
     testBeforeAdd: 'Test this key before adding it.',
+    modelRequiredManual: 'No models were returned. Type a model name manually, then test again.',
     savedValidated: 'Key saved and validated.',
     savingDetails: 'Saving details...',
     detailsSaved: 'Details saved.',
     checkingKey: 'Checking key...',
     checkingClient: 'Checking {client} support...',
+    startupCheckingClients: 'Checking {keys} keys across {clients} clients...',
+    startupCheckingProgress: 'Checking · {done}/{total}',
+    startupCheckDone: 'Startup check complete: {keys} key(s), {checks} client checks.',
+    startupCheckDoneSkipped: 'Startup check complete: {keys} key(s), {checks} client checks, {skipped} skipped.',
+    startupCheckFailed: 'Startup check failed: {message}',
+    checkSelectedClientTitle: 'Check selected client support',
     keyValid: 'Key is valid.',
     clientValid: '{client} is supported.',
     actionFailed: 'Action failed.',
@@ -128,8 +144,10 @@ const translations = {
     switchingClient: 'Switching {client} configuration...',
     switchClientTitle: 'Switch this key into {client}',
     selectClientTitle: 'Select {client} for switch/check',
+    clientChecking: 'Checking',
     clientSupported: 'Supported',
-    clientUnsupported: 'Not supported or not checked',
+    clientUnsupported: 'Not supported',
+    clientNotChecked: 'Not checked yet',
     switchedOk: 'Switched. Codex config updated and Desktop restarted.',
     switchedManual: 'Switched. Codex config updated — restart Codex to apply.',
     deleteConfirm: 'Delete this key from Keydock?',
@@ -159,6 +177,7 @@ const translations = {
     editKeyPlaceholder: 'Leave blank to keep the current key',
     confirmTitle: 'Please confirm',
     detailTitle: 'Check details',
+    detailForClient: '{client} details',
     close: 'Close',
     cannotDeleteActive: 'The key in use cannot be deleted. Switch to another key first.'
   },
@@ -177,11 +196,13 @@ const translations = {
     emptyTitle: '添加第一个 Key',
     emptyHint: '当前没有已保存的 Key，先添加一个，后面切换会轻松很多。',
     activeBadge: '当前',
+    configuredBadge: '已配置',
+    networkVerifiedBadge: '网络已验证',
+    networkUnverifiedBadge: '网络未验证',
     modelsBadge: '{count} 个模型',
     currentActive: '当前生效',
     allKeys: '所有 Key',
     filterByClient: '按支持的客户端过滤 Key',
-    activeFromConfig: '来自 ~/.codex',
     noActiveTitle: '尚未配置 Codex Key',
     language: '语言',
     searchKeys: '搜索 Key',
@@ -218,7 +239,10 @@ const translations = {
     activeInCodexConfig: '使用中 · 已写入配置',
     activeClientsRunning: '使用中 · {clients} 运行中',
     activeClientsConfig: '使用中 · 已写入 {clients} 配置',
+    configuredInCodexUnverified: '已配置到 Codex · 网络未验证',
+    activeNetworkUnverified: '使用中 · 网络未验证',
     notChecked: '未检查',
+    notNetworkVerified: '网络未验证',
     noModels: '还没有返回模型',
     keyWillBeChecked: '先测试 Key 并加载可用模型，然后再添加到 Keydock。',
     footerMessage: '切换后需要重新打开终端里的 Codex 会话。',
@@ -227,11 +251,18 @@ const translations = {
     testPassed: 'Key 可用，已加载模型。',
     testFailed: 'Key 测试失败。',
     testBeforeAdd: '请先测试这个 Key，再添加。',
+    modelRequiredManual: '没有获取到模型列表，请手动输入模型名后再测试。',
     savedValidated: 'Key 已保存并验证通过。',
     savingDetails: '正在保存信息...',
     detailsSaved: '信息已保存。',
     checkingKey: '正在检查 Key...',
     checkingClient: '正在检测 {client} 支持...',
+    startupCheckingClients: '正在启动检测：{keys} 个 Key × {clients} 个客户端...',
+    startupCheckingProgress: '检测中 · {done}/{total}',
+    startupCheckDone: '启动检测完成：{keys} 个 Key，{checks} 次客户端检测。',
+    startupCheckDoneSkipped: '启动检测完成：{keys} 个 Key，{checks} 次客户端检测，跳过 {skipped} 个。',
+    startupCheckFailed: '启动检测失败：{message}',
+    checkSelectedClientTitle: '检测所选客户端支持',
     keyValid: 'Key 可用。',
     clientValid: '{client} 可用。',
     actionFailed: '操作失败。',
@@ -239,8 +270,10 @@ const translations = {
     switchingClient: '正在切换 {client} 配置...',
     switchClientTitle: '将这个 Key 切换到 {client}',
     selectClientTitle: '选择 {client} 作为切换/检测目标',
+    clientChecking: '检测中',
     clientSupported: '已支持',
-    clientUnsupported: '未支持或未检测',
+    clientUnsupported: '不支持',
+    clientNotChecked: '尚未检测',
     switchedOk: '已切换，Codex 配置已更新并重启了 Desktop。',
     switchedManual: '已切换，Codex 配置已更新——请手动重启 Codex 生效。',
     deleteConfirm: '确定要从 Keydock 删除这个 Key 吗？',
@@ -270,6 +303,7 @@ const translations = {
     editKeyPlaceholder: '留空则保持当前 Key',
     confirmTitle: '请确认',
     detailTitle: '检测详情',
+    detailForClient: '{client} 详情',
     close: '关闭',
     cannotDeleteActive: '当前使用的 Key 不能删除，请先切换到其它 Key。'
   },
@@ -288,11 +322,13 @@ const translations = {
     emptyTitle: '最初のキーを追加',
     emptyHint: '保存済みキーがありません。まず 1 つ追加すると切り替えが楽になります。',
     activeBadge: '使用中',
+    configuredBadge: '設定済み',
+    networkVerifiedBadge: 'ネットワーク確認済み',
+    networkUnverifiedBadge: 'ネットワーク未確認',
     modelsBadge: '{count} 個のモデル',
     currentActive: '現在のキー',
     allKeys: 'すべてのキー',
     filterByClient: '対応クライアントでキーを絞り込み',
-    activeFromConfig: '~/.codex から検出',
     noActiveTitle: 'Codex キーが未設定です',
     language: '言語',
     searchKeys: 'キーを検索',
@@ -329,7 +365,10 @@ const translations = {
     activeInCodexConfig: '使用中 · 設定に書き込み済み',
     activeClientsRunning: '使用中 · {clients} 実行中',
     activeClientsConfig: '使用中 · {clients} 設定済み',
+    configuredInCodexUnverified: 'Codex に設定済み · ネットワーク未確認',
+    activeNetworkUnverified: '使用中 · ネットワーク未確認',
     notChecked: '未確認',
+    notNetworkVerified: 'ネットワーク未確認',
     noModels: 'モデルはまだ取得されていません',
     keyWillBeChecked: 'キーをテストして利用可能なモデルを読み込み、その後 Keydock に追加します。',
     footerMessage: '切替後、ターミナルの Codex セッションは開き直してください。',
@@ -338,11 +377,18 @@ const translations = {
     testPassed: 'キーは有効です。モデルを読み込みました。',
     testFailed: 'キーテストに失敗しました。',
     testBeforeAdd: '追加する前にこのキーをテストしてください。',
+    modelRequiredManual: 'モデル一覧を取得できませんでした。モデル名を手動入力してから再テストしてください。',
     savedValidated: 'キーを保存し、確認しました。',
     savingDetails: '詳細を保存しています...',
     detailsSaved: '詳細を保存しました。',
     checkingKey: 'キーを確認しています...',
     checkingClient: '{client} 対応を確認しています...',
+    startupCheckingClients: '起動時チェック中: {keys} 個のキー × {clients} クライアント...',
+    startupCheckingProgress: '確認中 · {done}/{total}',
+    startupCheckDone: '起動時チェック完了: {keys} 件、{checks} 回のクライアントチェック。',
+    startupCheckDoneSkipped: '起動時チェック完了: {keys} 件、{checks} 回、{skipped} 件をスキップ。',
+    startupCheckFailed: '起動時チェック失敗: {message}',
+    checkSelectedClientTitle: '選択したクライアント対応を確認',
     keyValid: 'キーは利用可能です。',
     clientValid: '{client} は対応しています。',
     actionFailed: '操作に失敗しました。',
@@ -350,8 +396,10 @@ const translations = {
     switchingClient: '{client} の設定を切り替えています...',
     switchClientTitle: 'このキーを {client} に切り替え',
     selectClientTitle: '切替/確認対象に {client} を選択',
+    clientChecking: '確認中',
     clientSupported: '対応済み',
-    clientUnsupported: '未対応または未確認',
+    clientUnsupported: '未対応',
+    clientNotChecked: '未確認',
     switchedOk: '切替しました。Codex 設定を更新し、Desktop を再起動しました。',
     switchedManual: '切替しました。Codex 設定を更新しました——反映には Codex を再起動してください。',
     deleteConfirm: 'このキーを Keydock から削除しますか？',
@@ -381,6 +429,7 @@ const translations = {
     editKeyPlaceholder: '空欄なら現在のキーを保持します',
     confirmTitle: '確認してください',
     detailTitle: 'チェック詳細',
+    detailForClient: '{client} の詳細',
     close: '閉じる',
     cannotDeleteActive: '使用中のキーは削除できません。先に別のキーへ切り替えてください。'
   }
@@ -480,6 +529,20 @@ function clientLabels(ids) {
     .join(' / ');
 }
 
+function clientMessagesForKey(key) {
+  if (!key?.clientMessages || typeof key.clientMessages !== 'object') return {};
+  return key.clientMessages;
+}
+
+function clientDetailMessage(key, client) {
+  const selected = normalizeClientIds([client])[0];
+  const messages = clientMessagesForKey(key);
+  if (selected && typeof messages[selected] === 'string' && messages[selected].trim()) {
+    return messages[selected].trim();
+  }
+  return (key?.validationMessage || '').trim();
+}
+
 function selectedClientForKey(key) {
   const explicit = normalizeClientIds([selectedClients.get(key?.id)])[0];
   if (explicit) return explicit;
@@ -502,22 +565,74 @@ function pruneSelectedClients() {
   for (const id of selectedClients.keys()) {
     if (!ids.has(id)) selectedClients.delete(id);
   }
+  for (const id of startupClientChecks.keys()) {
+    if (!ids.has(id)) startupClientChecks.delete(id);
+  }
+}
+
+function queueStartupChecksForKeys(list) {
+  startupClientChecks.clear();
+  for (const key of list) {
+    const checks = new Map();
+    for (const option of CLIENT_OPTIONS) checks.set(option.id, 'queued');
+    startupClientChecks.set(key.id, checks);
+  }
+}
+
+function setStartupCheckState(keyId, client, state) {
+  const checks = startupClientChecks.get(keyId);
+  if (!checks || !checks.has(client)) return;
+  checks.set(client, state);
+}
+
+function startupProbeKey(keyId, client) {
+  return `${keyId || ''}:${client || ''}`;
+}
+
+function startupCheckState(key, client) {
+  return startupClientChecks.get(key?.id)?.get(client) || '';
+}
+
+function startupCheckProgress(key) {
+  const checks = startupClientChecks.get(key?.id);
+  if (!checks) return { total: 0, done: 0, running: false };
+  const states = Array.from(checks.values());
+  const total = states.length;
+  const done = states.filter((state) => state === 'done').length;
+  return { total, done, running: total > 0 && done < total };
+}
+
+function isStartupClientChecking(key, client) {
+  const state = startupCheckState(key, client);
+  return state === 'queued' || state === 'checking';
+}
+
+function hasStartupChecksRunning(key) {
+  return startupCheckProgress(key).running;
 }
 
 function renderClientIcons(key, { interactive = true } = {}) {
   const supportedIds = new Set(supportedClientIdsForKey(key));
   const selectedIds = new Set(activeClientIdsForKey(key));
   const selectedClient = selectedClientForKey(key);
+  const clientSupportChecked = !!String(key?.clientSupportCheckedAt || '').trim();
   const icons = CLIENT_OPTIONS
     .map((option) => {
       const supported = supportedIds.has(option.id);
       const active = selectedIds.has(option.id);
       const chosen = interactive && selectedClient === option.id;
-      const title = `${t('selectClientTitle', { client: option.label })} · ${supported ? t('clientSupported') : t('clientUnsupported')}`;
+      const checking = isStartupClientChecking(key, option.id);
+      const supportLabel = checking
+        ? t('clientChecking')
+        : supported
+        ? t('clientSupported')
+        : (clientSupportChecked ? t('clientUnsupported') : t('clientNotChecked'));
+      const title = `${t('selectClientTitle', { client: option.label })} · ${supportLabel}`;
       const classes = [
         'client-icon',
         option.id,
-        supported ? 'supported' : 'unsupported',
+        checking ? 'checking' : (supported ? 'supported' : 'unsupported'),
+        !checking && !supported && !clientSupportChecked ? 'unchecked' : '',
         active ? 'active-client' : '',
         chosen ? 'chosen' : ''
       ].filter(Boolean).join(' ');
@@ -549,7 +664,15 @@ function renderClientIcons(key, { interactive = true } = {}) {
     })
     .join('');
   const labels = CLIENT_OPTIONS
-    .map((option) => `${option.label}: ${supportedIds.has(option.id) ? t('clientSupported') : t('clientUnsupported')}`)
+    .map((option) => {
+      const checking = isStartupClientChecking(key, option.id);
+      const supportLabel = checking
+        ? t('clientChecking')
+        : supportedIds.has(option.id)
+        ? t('clientSupported')
+        : (clientSupportChecked ? t('clientUnsupported') : t('clientNotChecked'));
+      return `${option.label}: ${supportLabel}`;
+    })
     .join(', ');
   return `<div class="client-icons" aria-label="${escapeHtml(t('supportedClients'))}: ${escapeHtml(labels)}">${icons}</div>`;
 }
@@ -601,25 +724,84 @@ function requireBridge() {
   return false;
 }
 
+function updateBusyIndicator() {
+  $('busy').classList.toggle('hidden', !(busy || startupAutoCheckRunning));
+}
+
 function setBusy(value, message) {
   busy = value;
-  $('busy').classList.toggle('hidden', !value);
+  updateBusyIndicator();
   if (message) $('message').textContent = message;
   $('confirmAdd').disabled = value || !draftValidation?.valid;
   $('validateNewButton').disabled = value;
   $('addButton').disabled = value;
   document.querySelectorAll('.key-card button, .active-card button').forEach((node) => {
-    node.disabled = value;
+    const action = node.dataset.act;
+    if (action === 'select-client' || action === 'detail') return;
+    if (value) {
+      if (!node.disabled) {
+        node.dataset.busyDisabled = 'true';
+        node.disabled = true;
+      }
+    } else if (node.dataset.busyDisabled === 'true') {
+      delete node.dataset.busyDisabled;
+      node.disabled = false;
+    }
   });
 }
 
-function keyStatus(key) {
+function isKeyInUse(key) {
+  return !!(key?.active || activeClientIdsForKey(key).length > 0);
+}
+
+function isNetworkVerified(key) {
+  return !!(key?.available || supportedClientIdsForKey(key).length > 0);
+}
+
+function isClientVerified(key, client) {
+  const id = normalizeClientIds([client])[0];
+  return !!(id && supportedClientIdsForKey(key).includes(id));
+}
+
+function wasNetworkChecked(key) {
+  return !!String(key?.lastValidatedAt || key?.clientSupportCheckedAt || '').trim();
+}
+
+function verificationStatus(key, client = '') {
   if (!key) return '-';
-  if (activeClientIdsForKey(key).length > 0) return activeUsageLabel(key);
-  if (key.active) return activeUsageLabel(key);
-  if (key.available) return t('available');
-  if (key.lastValidatedAt) return t('unavailable');
-  return t('notChecked');
+  const selectedClient = normalizeClientIds([client])[0];
+  if (selectedClient) {
+    if (isClientVerified(key, selectedClient)) return t('available');
+    if (wasNetworkChecked(key)) return t('unavailable');
+    return t('notNetworkVerified');
+  }
+  if (isNetworkVerified(key)) return t('available');
+  if (wasNetworkChecked(key)) return t('unavailable');
+  return t('notNetworkVerified');
+}
+
+function keyStatus(key, client = '') {
+  if (!key) return '-';
+  const selectedClient = normalizeClientIds([client])[0];
+  if (selectedClient && isStartupClientChecking(key, selectedClient)) {
+    return t('clientChecking');
+  }
+  const progress = startupCheckProgress(key);
+  if (!selectedClient && progress.running) {
+    return t('startupCheckingProgress', { done: progress.done, total: progress.total });
+  }
+  const selectedClientFailed = selectedClient && wasNetworkChecked(key) && !isClientVerified(key, selectedClient);
+  if (isKeyInUse(key)) {
+    if (selectedClientFailed) return t('unavailable');
+    if (isNetworkVerified(key)) return activeUsageLabel(key);
+    return activeClientIdsForKey(key).length > 0
+      ? t('activeNetworkUnverified')
+      : t('configuredInCodexUnverified');
+  }
+  if (hasStartupChecksRunning(key) && !selectedClient) {
+    return t('startupCheckingProgress', { done: progress.done, total: progress.total });
+  }
+  return verificationStatus(key, selectedClient);
 }
 
 // Describe where the active key is currently consumed, based on which Codex
@@ -640,10 +822,14 @@ function activeUsageLabel(key = null) {
   return t('activeInCodexConfig');
 }
 
-function keyStatusClass(key) {
+function keyStatusClass(key, client = '') {
   if (!key) return 'idle';
-  if (key.active || activeClientIdsForKey(key).length > 0 || key.available) return 'ok';
-  if (key.lastValidatedAt) return 'bad';
+  const selectedClient = normalizeClientIds([client])[0];
+  if (selectedClient && isStartupClientChecking(key, selectedClient)) return 'pending';
+  if (!selectedClient && startupCheckProgress(key).running) return 'pending';
+  if (selectedClient && wasNetworkChecked(key) && !isClientVerified(key, selectedClient)) return 'bad';
+  if (isKeyInUse(key) || isNetworkVerified(key)) return 'ok';
+  if (wasNetworkChecked(key)) return 'bad';
   return 'idle';
 }
 
@@ -659,15 +845,19 @@ function renderActiveCard() {
   if (active) {
     const modelText = active.model || t('noModels');
     const clientIcons = renderClientIcons(active, { interactive: false });
-    card.className = `active-card ok`;
+    const verified = isNetworkVerified(active);
+    const statusClient = selectedClientForKey(active);
+    const statusClass = keyStatusClass(active, statusClient);
+    card.className = `active-card ${statusClass}`;
     card.innerHTML = `
       <div class="active-top">
         <div class="active-name">
-          <span class="dot ok"></span>
+          <span class="dot ${statusClass}"></span>
           <strong>${escapeHtml(active.label || '-')}</strong>
           <span class="badge">${escapeHtml(t('activeBadge'))}</span>
+          <span class="badge subtle">${escapeHtml(t(verified ? 'networkVerifiedBadge' : 'networkUnverifiedBadge'))}</span>
         </div>
-        <span class="active-status">${escapeHtml(keyStatus(active))}</span>
+        <span class="active-status ${statusClass}">${escapeHtml(keyStatus(active, statusClient))}</span>
       </div>
       <div class="active-client-row">${clientIcons}</div>
       <div class="active-grid">
@@ -690,8 +880,10 @@ function renderActiveCard() {
         <div class="active-name">
           <span class="dot ok"></span>
           <strong>${escapeHtml(profile.label || 'Codex')}</strong>
-          <span class="badge subtle">${escapeHtml(t('activeFromConfig'))}</span>
+          <span class="badge subtle">${escapeHtml(t('configuredBadge'))}</span>
+          <span class="badge subtle">${escapeHtml(t('networkUnverifiedBadge'))}</span>
         </div>
+        <span class="active-status">${escapeHtml(t('configuredInCodexUnverified'))}</span>
       </div>
       <div class="active-grid">
         <div><span>${escapeHtml(t('baseUrl'))}</span><code>${escapeHtml(profile.baseUrl || DEFAULT_BASE_URL)}</code></div>
@@ -752,9 +944,12 @@ function renderKeyGrid() {
 
   for (const key of list) {
     const modelCount = Array.isArray(key.models) ? key.models.length : 0;
-    const statusClass = keyStatusClass(key);
-    const showDetail = statusClass === 'bad' && !!(key.validationMessage || '').trim();
-    const inUse = key.active || activeClientIdsForKey(key).length > 0;
+    const selectedClient = selectedClientForKey(key);
+    const statusClass = keyStatusClass(key, selectedClient);
+    const selectedClientChecking = isStartupClientChecking(key, selectedClient);
+    const showDetail = statusClass === 'bad' && !!clientDetailMessage(key, selectedClient);
+    const inUse = isKeyInUse(key);
+    const verified = isNetworkVerified(key);
     const card = document.createElement('article');
     card.className = `key-card${inUse ? ' active' : ''}`;
     card.dataset.id = key.id;
@@ -763,6 +958,7 @@ function renderKeyGrid() {
         <span class="dot ${statusClass}"></span>
         <strong>${escapeHtml(key.label || '-')}</strong>
         ${inUse ? `<span class="badge">${escapeHtml(t('activeBadge'))}</span>` : ''}
+        ${inUse ? `<span class="badge subtle">${escapeHtml(t(verified ? 'networkVerifiedBadge' : 'networkUnverifiedBadge'))}</span>` : ''}
       </div>
       <code class="masked">${escapeHtml(key.maskedKey || '-')}</code>
       <div class="key-meta">
@@ -771,12 +967,12 @@ function renderKeyGrid() {
       </div>
       ${renderClientIcons(key)}
       <div class="status-line ${statusClass}">
-        <span class="status-text">${escapeHtml(keyStatus(key))}</span>
+        <span class="status-text">${escapeHtml(keyStatus(key, selectedClient))}</span>
         ${showDetail ? `<button type="button" class="detail-btn" data-act="detail" title="${escapeHtml(t('detailTitle'))}" aria-label="${escapeHtml(t('detailTitle'))}">&#9432;</button>` : ''}
       </div>
       <div class="card-actions">
         <button type="button" class="primary" data-act="switch">${escapeHtml(t('switchAction'))}</button>
-        <button type="button" data-act="check">${escapeHtml(t('check'))}</button>
+        <button type="button" data-act="check" title="${escapeHtml(t('checkSelectedClientTitle'))}" aria-label="${escapeHtml(t('checkSelectedClientTitle'))}" ${selectedClientChecking ? 'disabled' : ''}>${escapeHtml(t('check'))}</button>
         <button type="button" data-act="edit">${escapeHtml(t('edit'))}</button>
         <button type="button" class="danger" data-act="delete">${escapeHtml(t('delete'))}</button>
       </div>
@@ -999,10 +1195,16 @@ function setAddStatus(text, state = '') {
 }
 
 function clearDraftValidation() {
+  const manualModel = $('newModelField').value.trim();
   draftValidation = null;
-  setModelOptions($('newModelField'), [], '');
+  setModelOptions($('newModelField'), [], manualModel);
   setAddStatus('');
   $('confirmAdd').disabled = true;
+}
+
+function needsManualModel(result) {
+  const message = String(result?.message || '').toLowerCase();
+  return message.includes('model is required') || message.includes('required to probe client support');
 }
 
 function setDraftModels(models, selectedModel = '') {
@@ -1041,6 +1243,11 @@ async function testDraftKey() {
     const result = await window.keydock.testDraftKey({ baseUrl, apiKey, model });
     if (!result?.valid) {
       clearDraftValidation();
+      if (!model && needsManualModel(result)) {
+        $('newModelField').focus();
+        setAddStatus(t('modelRequiredManual'), 'bad');
+        return null;
+      }
       setAddStatus(result?.message || t('testFailed'), 'bad');
       return null;
     }
@@ -1206,10 +1413,14 @@ async function saveEdit() {
 
 /* ---------- Detail & confirm dialogs ---------- */
 
-function openDetailDialog(id) {
+function openDetailDialog(id, client = '') {
   const key = keys.find((item) => item.id === id);
-  const message = (key?.validationMessage || '').trim() || t('notChecked');
-  $('detailBody').textContent = message;
+  const selectedClient = normalizeClientIds([client])[0] || selectedClientForKey(key);
+  const option = clientOption(selectedClient);
+  const message = clientDetailMessage(key, selectedClient) || t('notChecked');
+  $('detailBody').textContent = option
+    ? `${t('detailForClient', { client: option.label })}\n\n${message}`
+    : message;
   $('detailDialog').showModal();
 }
 
@@ -1271,6 +1482,11 @@ async function switchKeyClient(id, client) {
 async function checkKeyClient(id, client) {
   const option = clientOption(client);
   if (!option) return;
+  const key = keys.find((item) => item.id === id);
+  if (isStartupClientChecking(key, client)) {
+    $('message').textContent = t('checkingClient', { client: option.label });
+    return;
+  }
   const result = await withAction(
     t('checkingClient', { client: option.label }),
     () => window.keydock.validateKeyClient({ id, client })
@@ -1413,12 +1629,16 @@ $('keyGrid').addEventListener('click', (event) => {
   if (!id) return;
   const action = button.dataset.act;
   if (action === 'detail') {
-    openDetailDialog(id);
+    const key = keys.find((item) => item.id === id);
+    openDetailDialog(id, selectedClientForKey(key));
+    return;
+  }
+  if (action === 'select-client') {
+    setSelectedClientForKey(id, button.dataset.client);
     return;
   }
   if (busy) return;
-  if (action === 'select-client') setSelectedClientForKey(id, button.dataset.client);
-  else if (action === 'switch') {
+  if (action === 'switch') {
     const key = keys.find((item) => item.id === id);
     switchKeyClient(id, selectedClientForKey(key));
   } else if (action === 'check') {
@@ -1468,6 +1688,76 @@ async function loadDiagnostics() {
   render();
 }
 
+async function validateAllKeyClientsOnStartup() {
+  if (!requireBridge() || keys.length === 0 || startupAutoCheckRunning) return;
+  const queue = keys.map((key) => ({ id: key.id }));
+  queueStartupChecksForKeys(keys);
+  startupAutoCheckRunning = true;
+  updateBusyIndicator();
+  render();
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+
+  let checkedKeys = 0;
+  let checkedClients = 0;
+  let skipped = 0;
+  try {
+    $('message').textContent = t('startupCheckingClients', {
+      keys: keys.length,
+      clients: CLIENT_OPTIONS.length
+    });
+    for (const item of queue) {
+      let checkedThisKey = false;
+      for (const option of CLIENT_OPTIONS) {
+        if (!startupClientChecks.has(item.id)) {
+          skipped += 1;
+          break;
+        }
+        setStartupCheckState(item.id, option.id, 'checking');
+        render();
+        $('message').textContent = t('checkingClient', { client: option.label });
+        const probeKey = startupProbeKey(item.id, option.id);
+        try {
+          if (startupProbeKeys.has(probeKey)) {
+            continue;
+          }
+          startupProbeKeys.add(probeKey);
+          await window.keydock.validateKeyClient({ id: item.id, client: option.id });
+          checkedClients += 1;
+          checkedThisKey = true;
+        } catch (error) {
+          skipped += 1;
+          $('message').textContent = errorText(error);
+        } finally {
+          setStartupCheckState(item.id, option.id, 'done');
+          await refresh();
+        }
+      }
+      if (checkedThisKey) checkedKeys += 1;
+    }
+    await loadDiagnostics();
+    $('message').textContent = skipped > 0
+      ? t('startupCheckDoneSkipped', { keys: checkedKeys, checks: checkedClients, skipped })
+      : t('startupCheckDone', { keys: checkedKeys, checks: checkedClients });
+  } catch (error) {
+    $('message').textContent = t('startupCheckFailed', { message: errorText(error) });
+  } finally {
+    startupAutoCheckRunning = false;
+    updateBusyIndicator();
+    render();
+  }
+}
+
+async function boot() {
+  await refresh();
+  await loadDiagnostics();
+  validateAllKeyClientsOnStartup().catch((error) => {
+    $('message').textContent = t('startupCheckFailed', { message: errorText(error) });
+    startupAutoCheckRunning = false;
+    updateBusyIndicator();
+    render();
+  });
+}
+
 window.addEventListener('languagechange', () => {
   if (languageMode() === 'auto') render();
 });
@@ -1483,4 +1773,7 @@ renderClientFilterBar();
 updateRevealIcon();
 updateEditRevealIcon();
 $('message').textContent = t('footerMessage');
-refresh().then(loadDiagnostics);
+boot().catch((error) => {
+  $('message').textContent = errorText(error);
+  setBusy(false);
+});

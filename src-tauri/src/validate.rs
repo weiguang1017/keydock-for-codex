@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use crate::DEFAULT_BASE_URL;
 
@@ -15,6 +15,8 @@ pub struct ValidationResult {
     pub supported_clients: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub client_support_probes: Vec<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub client_messages: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub model: String,
 }
@@ -28,6 +30,7 @@ impl ValidationResult {
             models,
             supported_clients: Vec::new(),
             client_support_probes: Vec::new(),
+            client_messages: HashMap::new(),
             model: String::new(),
         }
     }
@@ -40,6 +43,7 @@ impl ValidationResult {
             models,
             supported_clients: Vec::new(),
             client_support_probes: Vec::new(),
+            client_messages: HashMap::new(),
             model: String::new(),
         }
     }
@@ -469,6 +473,14 @@ pub fn validate_clients_key(
             "codex:responses".to_string(),
             "openclaw:chat_completions".to_string(),
         ];
+        result.client_messages.insert(
+            CLIENT_CODEX.to_string(),
+            "Codex is supported by the test validation shortcut.".to_string(),
+        );
+        result.client_messages.insert(
+            CLIENT_OPENCLAW.to_string(),
+            "OpenClaw is supported by the test validation shortcut.".to_string(),
+        );
         return result;
     }
 
@@ -505,14 +517,23 @@ pub fn validate_clients_key(
 
     let mut supported = Vec::new();
     let mut probes = Vec::new();
+    let mut client_messages = HashMap::new();
     if codex.valid {
         supported.push(CLIENT_CODEX.to_string());
         probes.push("codex:responses".to_string());
     }
+    client_messages.insert(
+        CLIENT_CODEX.to_string(),
+        client_probe_message("Codex", codex.valid, &codex.message),
+    );
     if chat.valid {
         supported.push(CLIENT_OPENCLAW.to_string());
         probes.push("openclaw:chat_completions".to_string());
     }
+    client_messages.insert(
+        CLIENT_OPENCLAW.to_string(),
+        client_probe_message("OpenClaw", chat.valid, &chat.message),
+    );
     supported = normalize_supported_clients(supported);
 
     if !supported.is_empty() {
@@ -522,6 +543,7 @@ pub fn validate_clients_key(
         result.model = selected_model;
         result.supported_clients = supported;
         result.client_support_probes = probes;
+        result.client_messages = client_messages;
         result
     } else {
         let mut result = ValidationResult::fail(
@@ -538,7 +560,23 @@ pub fn validate_clients_key(
             models,
         );
         result.model = selected_model;
+        result.client_messages = client_messages;
         result
+    }
+}
+
+fn client_probe_message(label: &str, valid: bool, message: &str) -> String {
+    let detail = trim(message);
+    if valid {
+        if detail.is_empty() {
+            format!("{label} accepted this key and model.")
+        } else {
+            format!("{label} accepted this key and model. {detail}")
+        }
+    } else if detail.is_empty() {
+        format!("{label} did not accept this key and model.")
+    } else {
+        format!("{label} did not accept this key and model. {detail}")
     }
 }
 

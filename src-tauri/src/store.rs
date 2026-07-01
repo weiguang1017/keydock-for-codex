@@ -26,6 +26,8 @@ pub struct KeyRecord {
     pub supported_clients: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub client_support_probes: Vec<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub client_messages: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub active_clients: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -55,6 +57,7 @@ pub struct MetadataUpdate {
     pub validation_message: Option<String>,
     pub supported_clients: Option<Vec<String>>,
     pub client_support_probes: Option<Vec<String>>,
+    pub client_messages: Option<HashMap<String, String>>,
     pub client_support_checked_at: Option<String>,
     pub last_validated_at: Option<String>,
 }
@@ -81,6 +84,8 @@ pub struct ExportedKey {
     pub supported_clients: Vec<String>,
     #[serde(default)]
     pub client_support_probes: Vec<String>,
+    #[serde(default)]
+    pub client_messages: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub client_support_checked_at: String,
 }
@@ -197,6 +202,7 @@ impl KeydockStore {
             models,
             supported_clients: normalize_supported_clients(validation.supported_clients.clone()),
             client_support_probes: unique_strings(validation.client_support_probes.clone()),
+            client_messages: clean_client_messages(validation.client_messages.clone()),
             active_clients: Vec::new(),
             running_clients: Vec::new(),
             client_support_checked_at: if validation.supported_clients.is_empty() {
@@ -272,6 +278,7 @@ impl KeydockStore {
             if key_changed || base_changed || model_changed {
                 record.supported_clients = Vec::new();
                 record.client_support_probes = Vec::new();
+                record.client_messages = HashMap::new();
             }
             mark_codex_configured(record, &timestamp);
             if !profile.message.is_empty() {
@@ -295,6 +302,7 @@ impl KeydockStore {
                 models,
                 supported_clients: Vec::new(),
                 client_support_probes: Vec::new(),
+                client_messages: HashMap::new(),
                 active_clients: Vec::new(),
                 running_clients: Vec::new(),
                 client_support_checked_at: String::new(),
@@ -360,6 +368,7 @@ impl KeydockStore {
                 record.model = String::new();
                 record.supported_clients = Vec::new();
                 record.client_support_probes = Vec::new();
+                record.client_messages = HashMap::new();
                 record.client_support_checked_at = String::new();
                 record.validation_message = "Base URL changed. Check the key again.".to_string();
             }
@@ -371,6 +380,7 @@ impl KeydockStore {
                 record.available = false;
                 record.supported_clients = Vec::new();
                 record.client_support_probes = Vec::new();
+                record.client_messages = HashMap::new();
                 record.client_support_checked_at = String::new();
                 record.validation_message = "Model changed. Check the key again.".to_string();
             }
@@ -393,6 +403,9 @@ impl KeydockStore {
         }
         if let Some(client_support_probes) = updates.client_support_probes {
             record.client_support_probes = unique_strings(client_support_probes);
+        }
+        if let Some(client_messages) = updates.client_messages {
+            record.client_messages = clean_client_messages(client_messages);
         }
         if let Some(client_support_checked_at) = updates.client_support_checked_at {
             record.client_support_checked_at = trim(client_support_checked_at);
@@ -459,6 +472,7 @@ impl KeydockStore {
         record.masked_key = mask_key(&api_key);
         record.supported_clients = Vec::new();
         record.client_support_probes = Vec::new();
+        record.client_messages = HashMap::new();
         record.client_support_checked_at = String::new();
         record.updated_at = now_iso();
 
@@ -479,7 +493,7 @@ impl KeydockStore {
         self.update_metadata(
             id,
             MetadataUpdate {
-                available: Some(result.valid),
+                available: Some(result.valid || !result.supported_clients.is_empty()),
                 status_code: Some(result.status_code),
                 validation_message: Some(result.message.clone()),
                 // Preserve previously stored models when this check did not fetch
@@ -496,6 +510,7 @@ impl KeydockStore {
                 },
                 supported_clients: Some(result.supported_clients.clone()),
                 client_support_probes: Some(result.client_support_probes.clone()),
+                client_messages: Some(result.client_messages.clone()),
                 client_support_checked_at: Some(timestamp.clone()),
                 last_validated_at: Some(timestamp),
                 ..MetadataUpdate::default()
@@ -527,6 +542,7 @@ impl KeydockStore {
                 models: record.models.clone(),
                 supported_clients: record.supported_clients.clone(),
                 client_support_probes: record.client_support_probes.clone(),
+                client_messages: record.client_messages.clone(),
                 client_support_checked_at: record.client_support_checked_at.clone(),
             });
         }
@@ -604,6 +620,7 @@ impl KeydockStore {
                 models,
                 supported_clients: normalize_supported_clients(item.supported_clients),
                 client_support_probes: unique_strings(item.client_support_probes),
+                client_messages: clean_client_messages(item.client_messages),
                 active_clients: Vec::new(),
                 running_clients: Vec::new(),
                 client_support_checked_at: trim(item.client_support_checked_at),
@@ -632,9 +649,6 @@ impl KeydockStore {
         for record in &mut records {
             record.active = record.id == id;
             record.updated_at = timestamp.clone();
-            if record.active {
-                record.last_validated_at = timestamp.clone();
-            }
         }
         self.save_list(records.clone())?;
         Ok(records)
@@ -659,6 +673,24 @@ pub fn now_iso() -> String {
 
 fn default_supported_clients() -> Vec<String> {
     Vec::new()
+}
+
+fn clean_client_messages(messages: HashMap<String, String>) -> HashMap<String, String> {
+    messages
+        .into_iter()
+        .filter_map(|(client, message)| {
+            let client = trim(client).to_ascii_lowercase();
+            if !matches!(client.as_str(), "codex" | "openclaw" | "hermes") {
+                return None;
+            }
+            let message = trim(message);
+            if message.is_empty() {
+                None
+            } else {
+                Some((client, message))
+            }
+        })
+        .collect()
 }
 
 fn mark_codex_configured(record: &mut KeyRecord, timestamp: &str) {
@@ -814,6 +846,75 @@ mod tests {
         assert!(record.client_support_checked_at.is_empty());
         let listed = store.list().unwrap();
         assert!(listed[0].supported_clients.is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mark_active_does_not_mark_unverified_key_as_validated() {
+        let dir = std::env::temp_dir().join(format!("keydock-active-{}", Uuid::new_v4()));
+        let store = KeydockStore::new(&dir);
+        let record = store
+            .add(
+                "Unchecked",
+                "https://api.example.com/v1",
+                "sk-unchecked-111111",
+                &ValidationResult::ok("ok", vec!["gpt-a".to_string()]),
+            )
+            .unwrap();
+        store
+            .update_metadata(
+                &record.id,
+                MetadataUpdate {
+                    available: Some(false),
+                    supported_clients: Some(Vec::new()),
+                    client_support_checked_at: Some(String::new()),
+                    last_validated_at: Some(String::new()),
+                    validation_message: Some("Configured locally.".to_string()),
+                    ..MetadataUpdate::default()
+                },
+            )
+            .unwrap();
+
+        store.mark_active(&record.id).unwrap();
+        let listed = store.list().unwrap();
+        let active = listed.iter().find(|item| item.id == record.id).unwrap();
+
+        assert!(active.active);
+        assert!(!active.available);
+        assert!(active.supported_clients.is_empty());
+        assert!(active.client_support_checked_at.is_empty());
+        assert!(active.last_validated_at.is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_client_check_keeps_key_available_when_other_clients_remain() {
+        let dir = std::env::temp_dir().join(format!("keydock-partial-{}", Uuid::new_v4()));
+        let store = KeydockStore::new(&dir);
+        let mut validation = ValidationResult::ok("Supported clients: OpenClaw.", vec![]);
+        validation.supported_clients = vec!["openclaw".to_string()];
+        validation.client_support_probes = vec!["openclaw:chat_completions".to_string()];
+        let record = store
+            .add(
+                "Partial",
+                "https://api.example.com/v1",
+                "sk-partial-111111",
+                &validation,
+            )
+            .unwrap();
+
+        let mut failed_codex =
+            ValidationResult::fail(404, "Codex support could not be confirmed.", vec![]);
+        failed_codex.supported_clients = vec!["openclaw".to_string()];
+        failed_codex.client_support_probes = vec!["openclaw:chat_completions".to_string()];
+        let updated = store.mark_validation(&record.id, &failed_codex).unwrap();
+
+        assert!(updated.available);
+        assert_eq!(updated.supported_clients, vec!["openclaw"]);
+        assert_eq!(
+            updated.validation_message,
+            "Codex support could not be confirmed."
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
