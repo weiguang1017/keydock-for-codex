@@ -5,6 +5,12 @@ let draftValidation = null;
 let editValidation = null;
 let editingId = null;
 let codexInfo = null;
+let draftTestRunning = false;
+let draftTestSeq = 0;
+let draftTestActive = 0;
+let editTestRunning = false;
+let editTestSeq = 0;
+let editTestActive = 0;
 
 const tauriInvoke = window.__TAURI__?.core?.invoke || window.__TAURI__?.invoke;
 if (!window.keydock && typeof tauriInvoke === 'function') {
@@ -47,11 +53,13 @@ const CLIENT_OPTIONS = [
   { id: 'openclaw', label: 'OpenClaw', icon: './assets/clients/openclaw.png' },
   { id: 'hermes', label: 'Hermes', icon: './assets/clients/hermes.png' }
 ];
+const STARTUP_CLIENT_IDS = new Set(['codex']);
 
 const clientFilters = new Set();
 const selectedClients = new Map();
 const startupClientChecks = new Map();
 const startupProbeKeys = new Set();
+const manualClientChecks = new Set();
 let startupAutoCheckRunning = false;
 
 const translations = {
@@ -241,7 +249,7 @@ const translations = {
     activeClientsConfig: '使用中 · 已写入 {clients} 配置',
     configuredInCodexUnverified: '已配置到 Codex · 网络未验证',
     activeNetworkUnverified: '使用中 · 网络未验证',
-    notChecked: '未检查',
+    notChecked: '未检测',
     notNetworkVerified: '网络未验证',
     noModels: '还没有返回模型',
     keyWillBeChecked: '先测试 Key 并加载可用模型，然后再添加到 Keydock。',
@@ -507,7 +515,6 @@ function clientOption(id) {
 }
 
 function supportedClientIdsForKey(key) {
-  if (!String(key?.clientSupportCheckedAt || '').trim()) return [];
   return normalizeClientIds(key?.supportedClients);
 }
 
@@ -534,12 +541,26 @@ function clientMessagesForKey(key) {
   return key.clientMessages;
 }
 
+function clientProbeIdsForKey(key) {
+  return Array.isArray(key?.clientSupportProbes) ? key.clientSupportProbes.filter(Boolean) : [];
+}
+
+function wasClientChecked(key, client) {
+  const selected = normalizeClientIds([client])[0];
+  if (!selected) return false;
+  if (isClientVerified(key, selected)) return true;
+  const messages = clientMessagesForKey(key);
+  if (typeof messages[selected] === 'string' && messages[selected].trim()) return true;
+  return clientProbeIdsForKey(key).some((probe) => String(probe).startsWith(`${selected}:`));
+}
+
 function clientDetailMessage(key, client) {
   const selected = normalizeClientIds([client])[0];
   const messages = clientMessagesForKey(key);
   if (selected && typeof messages[selected] === 'string' && messages[selected].trim()) {
     return messages[selected].trim();
   }
+  if (selected && !wasClientChecked(key, selected)) return '';
   return (key?.validationMessage || '').trim();
 }
 
@@ -573,10 +594,20 @@ function pruneSelectedClients() {
 function queueStartupChecksForKeys(list) {
   startupClientChecks.clear();
   for (const key of list) {
+    const clients = startupClientsForKey(key);
+    if (clients.length === 0) continue;
     const checks = new Map();
-    for (const option of CLIENT_OPTIONS) checks.set(option.id, 'queued');
+    for (const option of clients) checks.set(option.id, 'queued');
     startupClientChecks.set(key.id, checks);
   }
+}
+
+function startupClientOptions() {
+  return CLIENT_OPTIONS.filter((option) => STARTUP_CLIENT_IDS.has(option.id));
+}
+
+function startupClientsForKey(key) {
+  return startupClientOptions().filter((option) => !wasClientChecked(key, option.id));
 }
 
 function setStartupCheckState(keyId, client, state) {
@@ -586,6 +617,10 @@ function setStartupCheckState(keyId, client, state) {
 }
 
 function startupProbeKey(keyId, client) {
+  return `${keyId || ''}:${client || ''}`;
+}
+
+function clientCheckKey(keyId, client) {
   return `${keyId || ''}:${client || ''}`;
 }
 
@@ -607,6 +642,14 @@ function isStartupClientChecking(key, client) {
   return state === 'queued' || state === 'checking';
 }
 
+function isManualClientChecking(key, client) {
+  return manualClientChecks.has(clientCheckKey(key?.id, client));
+}
+
+function isClientChecking(key, client) {
+  return isStartupClientChecking(key, client) || isManualClientChecking(key, client);
+}
+
 function hasStartupChecksRunning(key) {
   return startupCheckProgress(key).running;
 }
@@ -615,24 +658,24 @@ function renderClientIcons(key, { interactive = true } = {}) {
   const supportedIds = new Set(supportedClientIdsForKey(key));
   const selectedIds = new Set(activeClientIdsForKey(key));
   const selectedClient = selectedClientForKey(key);
-  const clientSupportChecked = !!String(key?.clientSupportCheckedAt || '').trim();
   const icons = CLIENT_OPTIONS
     .map((option) => {
       const supported = supportedIds.has(option.id);
       const active = selectedIds.has(option.id);
       const chosen = interactive && selectedClient === option.id;
-      const checking = isStartupClientChecking(key, option.id);
+      const checking = isClientChecking(key, option.id);
+      const checked = wasClientChecked(key, option.id);
       const supportLabel = checking
         ? t('clientChecking')
         : supported
         ? t('clientSupported')
-        : (clientSupportChecked ? t('clientUnsupported') : t('clientNotChecked'));
+        : (checked ? t('clientUnsupported') : t('clientNotChecked'));
       const title = `${t('selectClientTitle', { client: option.label })} · ${supportLabel}`;
       const classes = [
         'client-icon',
         option.id,
         checking ? 'checking' : (supported ? 'supported' : 'unsupported'),
-        !checking && !supported && !clientSupportChecked ? 'unchecked' : '',
+        !checking && !supported && !checked ? 'unchecked' : '',
         active ? 'active-client' : '',
         chosen ? 'chosen' : ''
       ].filter(Boolean).join(' ');
@@ -665,12 +708,13 @@ function renderClientIcons(key, { interactive = true } = {}) {
     .join('');
   const labels = CLIENT_OPTIONS
     .map((option) => {
-      const checking = isStartupClientChecking(key, option.id);
+      const checking = isClientChecking(key, option.id);
+      const checked = wasClientChecked(key, option.id);
       const supportLabel = checking
         ? t('clientChecking')
         : supportedIds.has(option.id)
         ? t('clientSupported')
-        : (clientSupportChecked ? t('clientUnsupported') : t('clientNotChecked'));
+        : (checked ? t('clientUnsupported') : t('clientNotChecked'));
       return `${option.label}: ${supportLabel}`;
     })
     .join(', ');
@@ -725,16 +769,56 @@ function requireBridge() {
 }
 
 function updateBusyIndicator() {
-  $('busy').classList.toggle('hidden', !(busy || startupAutoCheckRunning));
+  const hasLocalWork = draftTestRunning || editTestRunning || manualClientChecks.size > 0;
+  $('busy').classList.toggle('hidden', !(busy || startupAutoCheckRunning || hasLocalWork));
+}
+
+function syncActionControls() {
+  $('confirmAdd').disabled = busy || draftTestRunning || !draftValidation?.valid;
+  $('validateNewButton').disabled = busy || draftTestRunning;
+  $('validateNewButton').setAttribute('aria-busy', draftTestRunning ? 'true' : 'false');
+  const editButton = $('validateEditButton');
+  if (editButton) {
+    editButton.disabled = busy || editTestRunning;
+    editButton.setAttribute('aria-busy', editTestRunning ? 'true' : 'false');
+  }
+  $('addButton').disabled = busy;
+}
+
+function setDraftTesting(value) {
+  draftTestRunning = value;
+  updateBusyIndicator();
+  syncActionControls();
+}
+
+function stopDraftTesting() {
+  draftTestActive = 0;
+  setDraftTesting(false);
+}
+
+function setEditTesting(value) {
+  editTestRunning = value;
+  updateBusyIndicator();
+  syncActionControls();
+}
+
+function stopEditTesting() {
+  editTestActive = 0;
+  setEditTesting(false);
+}
+
+function setManualClientChecking(id, client, value) {
+  const checkKey = clientCheckKey(id, client);
+  if (value) manualClientChecks.add(checkKey);
+  else manualClientChecks.delete(checkKey);
+  updateBusyIndicator();
 }
 
 function setBusy(value, message) {
   busy = value;
   updateBusyIndicator();
   if (message) $('message').textContent = message;
-  $('confirmAdd').disabled = value || !draftValidation?.valid;
-  $('validateNewButton').disabled = value;
-  $('addButton').disabled = value;
+  syncActionControls();
   document.querySelectorAll('.key-card button, .active-card button').forEach((node) => {
     const action = node.dataset.act;
     if (action === 'select-client' || action === 'detail') return;
@@ -764,7 +848,8 @@ function isClientVerified(key, client) {
 }
 
 function wasNetworkChecked(key) {
-  return !!String(key?.lastValidatedAt || key?.clientSupportCheckedAt || '').trim();
+  if (String(key?.lastValidatedAt || key?.clientSupportCheckedAt || '').trim()) return true;
+  return CLIENT_OPTIONS.some((option) => wasClientChecked(key, option.id));
 }
 
 function verificationStatus(key, client = '') {
@@ -772,8 +857,8 @@ function verificationStatus(key, client = '') {
   const selectedClient = normalizeClientIds([client])[0];
   if (selectedClient) {
     if (isClientVerified(key, selectedClient)) return t('available');
-    if (wasNetworkChecked(key)) return t('unavailable');
-    return t('notNetworkVerified');
+    if (wasClientChecked(key, selectedClient)) return t('unavailable');
+    return t('notChecked');
   }
   if (isNetworkVerified(key)) return t('available');
   if (wasNetworkChecked(key)) return t('unavailable');
@@ -783,14 +868,18 @@ function verificationStatus(key, client = '') {
 function keyStatus(key, client = '') {
   if (!key) return '-';
   const selectedClient = normalizeClientIds([client])[0];
-  if (selectedClient && isStartupClientChecking(key, selectedClient)) {
+  if (selectedClient && isClientChecking(key, selectedClient)) {
     return t('clientChecking');
   }
   const progress = startupCheckProgress(key);
   if (!selectedClient && progress.running) {
     return t('startupCheckingProgress', { done: progress.done, total: progress.total });
   }
-  const selectedClientFailed = selectedClient && wasNetworkChecked(key) && !isClientVerified(key, selectedClient);
+  const selectedClientFailed = selectedClient && wasClientChecked(key, selectedClient) && !isClientVerified(key, selectedClient);
+  const selectedClientActive = selectedClient && activeClientIdsForKey(key).includes(selectedClient);
+  if (selectedClient && !selectedClientActive && !selectedClientFailed && !isClientVerified(key, selectedClient) && !wasClientChecked(key, selectedClient)) {
+    return t('notChecked');
+  }
   if (isKeyInUse(key)) {
     if (selectedClientFailed) return t('unavailable');
     if (isNetworkVerified(key)) return activeUsageLabel(key);
@@ -825,9 +914,10 @@ function activeUsageLabel(key = null) {
 function keyStatusClass(key, client = '') {
   if (!key) return 'idle';
   const selectedClient = normalizeClientIds([client])[0];
-  if (selectedClient && isStartupClientChecking(key, selectedClient)) return 'pending';
+  if (selectedClient && isClientChecking(key, selectedClient)) return 'pending';
   if (!selectedClient && startupCheckProgress(key).running) return 'pending';
-  if (selectedClient && wasNetworkChecked(key) && !isClientVerified(key, selectedClient)) return 'bad';
+  if (selectedClient && wasClientChecked(key, selectedClient) && !isClientVerified(key, selectedClient)) return 'bad';
+  if (selectedClient && !activeClientIdsForKey(key).includes(selectedClient) && !isClientVerified(key, selectedClient) && !wasClientChecked(key, selectedClient)) return 'idle';
   if (isKeyInUse(key) || isNetworkVerified(key)) return 'ok';
   if (wasNetworkChecked(key)) return 'bad';
   return 'idle';
@@ -946,7 +1036,7 @@ function renderKeyGrid() {
     const modelCount = Array.isArray(key.models) ? key.models.length : 0;
     const selectedClient = selectedClientForKey(key);
     const statusClass = keyStatusClass(key, selectedClient);
-    const selectedClientChecking = isStartupClientChecking(key, selectedClient);
+    const selectedClientChecking = isClientChecking(key, selectedClient);
     const showDetail = statusClass === 'bad' && !!clientDetailMessage(key, selectedClient);
     const inUse = isKeyInUse(key);
     const verified = isNetworkVerified(key);
@@ -1195,11 +1285,12 @@ function setAddStatus(text, state = '') {
 }
 
 function clearDraftValidation() {
+  draftTestSeq += 1;
   const manualModel = $('newModelField').value.trim();
   draftValidation = null;
   setModelOptions($('newModelField'), [], manualModel);
   setAddStatus('');
-  $('confirmAdd').disabled = true;
+  syncActionControls();
 }
 
 function needsManualModel(result) {
@@ -1237,10 +1328,15 @@ async function testDraftKey() {
   setAddStatus(t('testingDraft'), 'pending');
   // Probe with exactly what is typed in the form; do not refresh the list (that
   // would trigger a profile sync and is unrelated to testing a draft key).
+  const token = ++draftTestSeq;
+  draftTestActive = token;
+  const fingerprint = draftFingerprint();
   try {
-    setBusy(true, t('testingDraft'));
+    setDraftTesting(true);
+    $('message').textContent = t('testingDraft');
     const model = $('newModelField').value.trim();
     const result = await window.keydock.testDraftKey({ baseUrl, apiKey, model });
+    if (token !== draftTestSeq || fingerprint !== draftFingerprint()) return null;
     if (!result?.valid) {
       clearDraftValidation();
       if (!model && needsManualModel(result)) {
@@ -1260,11 +1356,16 @@ async function testDraftKey() {
     );
     return result;
   } catch (error) {
-    clearDraftValidation();
-    setAddStatus(errorText(error, 'testFailed'), 'bad');
+    if (token === draftTestSeq) {
+      clearDraftValidation();
+      setAddStatus(errorText(error, 'testFailed'), 'bad');
+    }
     return null;
   } finally {
-    setBusy(false);
+    if (draftTestActive === token) {
+      draftTestActive = 0;
+      setDraftTesting(false);
+    }
   }
 }
 
@@ -1327,6 +1428,7 @@ function editFingerprint() {
 }
 
 function clearEditValidation() {
+  editTestSeq += 1;
   editValidation = null;
 }
 
@@ -1361,10 +1463,15 @@ async function testEditKey() {
   setEditStatus(t('testingDraft'), 'pending');
   // Probe with the values currently typed in the edit form (a blank API key
   // falls back to the stored secret). Do not refresh the list while testing.
+  const token = ++editTestSeq;
+  editTestActive = token;
+  const fingerprint = editFingerprint();
   try {
-    setBusy(true, t('testingDraft'));
+    setEditTesting(true);
+    $('message').textContent = t('testingDraft');
     const model = $('editModelField').value.trim();
     const result = await window.keydock.testDraftKey({ id: editingId, baseUrl, apiKey, model });
+    if (token !== editTestSeq || fingerprint !== editFingerprint()) return null;
     if (!result?.valid) {
       clearEditValidation();
       setEditStatus(result?.message || t('testFailed'), 'bad');
@@ -1379,11 +1486,16 @@ async function testEditKey() {
     );
     return result;
   } catch (error) {
-    clearEditValidation();
-    setEditStatus(errorText(error, 'testFailed'), 'bad');
+    if (token === editTestSeq) {
+      clearEditValidation();
+      setEditStatus(errorText(error, 'testFailed'), 'bad');
+    }
     return null;
   } finally {
-    setBusy(false);
+    if (editTestActive === token) {
+      editTestActive = 0;
+      setEditTesting(false);
+    }
   }
 }
 
@@ -1483,17 +1595,26 @@ async function checkKeyClient(id, client) {
   const option = clientOption(client);
   if (!option) return;
   const key = keys.find((item) => item.id === id);
-  if (isStartupClientChecking(key, client)) {
+  if (isClientChecking(key, client)) {
     $('message').textContent = t('checkingClient', { client: option.label });
     return;
   }
-  const result = await withAction(
-    t('checkingClient', { client: option.label }),
-    () => window.keydock.validateKeyClient({ id, client })
-  );
-  $('message').textContent = result?.supportedClients?.includes(client)
-    ? t('clientValid', { client: option.label })
-    : (result?.message || t('actionFailed'));
+  setManualClientChecking(id, client, true);
+  render();
+  $('message').textContent = t('checkingClient', { client: option.label });
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  try {
+    const result = await window.keydock.validateKeyClient({ id, client });
+    await refresh();
+    $('message').textContent = result?.supportedClients?.includes(client)
+      ? t('clientValid', { client: option.label })
+      : (result?.message || t('actionFailed'));
+  } catch (error) {
+    $('message').textContent = errorText(error);
+  } finally {
+    setManualClientChecking(id, client, false);
+    render();
+  }
 }
 
 async function deleteKey(id) {
@@ -1580,11 +1701,25 @@ $('emptyAddButton').addEventListener('click', openAddDialog);
 $('exportButton').addEventListener('click', exportKeysToFile);
 $('importButton').addEventListener('click', () => $('importFileInput').click());
 $('importFileInput').addEventListener('change', importKeysFromFile);
-$('cancelAdd').addEventListener('click', () => $('addDialog').close());
+$('cancelAdd').addEventListener('click', () => {
+  clearDraftValidation();
+  stopDraftTesting();
+  $('addDialog').close();
+});
 $('cancelEdit').addEventListener('click', () => {
   $('editDialog').close();
   editingId = null;
   clearEditValidation();
+  stopEditTesting();
+});
+$('addDialog').addEventListener('cancel', () => {
+  clearDraftValidation();
+  stopDraftTesting();
+});
+$('editDialog').addEventListener('cancel', () => {
+  editingId = null;
+  clearEditValidation();
+  stopEditTesting();
 });
 
 $('validateNewButton').addEventListener('click', () => {
@@ -1690,7 +1825,16 @@ async function loadDiagnostics() {
 
 async function validateAllKeyClientsOnStartup() {
   if (!requireBridge() || keys.length === 0 || startupAutoCheckRunning) return;
-  const queue = keys.map((key) => ({ id: key.id }));
+  const startupClients = startupClientOptions();
+  if (startupClients.length === 0) return;
+  const queue = keys
+    .map((key) => ({ id: key.id, clients: startupClientsForKey(key) }))
+    .filter((item) => item.clients.length > 0);
+  if (queue.length === 0) {
+    startupClientChecks.clear();
+    render();
+    return;
+  }
   queueStartupChecksForKeys(keys);
   startupAutoCheckRunning = true;
   updateBusyIndicator();
@@ -1702,12 +1846,12 @@ async function validateAllKeyClientsOnStartup() {
   let skipped = 0;
   try {
     $('message').textContent = t('startupCheckingClients', {
-      keys: keys.length,
-      clients: CLIENT_OPTIONS.length
+      keys: queue.length,
+      clients: startupClients.length
     });
     for (const item of queue) {
       let checkedThisKey = false;
-      for (const option of CLIENT_OPTIONS) {
+      for (const option of item.clients) {
         if (!startupClientChecks.has(item.id)) {
           skipped += 1;
           break;
@@ -1772,6 +1916,7 @@ applyStaticText();
 renderClientFilterBar();
 updateRevealIcon();
 updateEditRevealIcon();
+syncActionControls();
 $('message').textContent = t('footerMessage');
 boot().catch((error) => {
   $('message').textContent = errorText(error);

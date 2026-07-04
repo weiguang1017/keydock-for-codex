@@ -88,32 +88,44 @@ pub fn list_keys() -> Result<Vec<KeyRecord>, String> {
 }
 
 #[tauri::command]
-pub fn validate_all_key_clients_cmd() -> Result<StartupValidationSummary, String> {
-    let store = KeydockStore::default();
-    let _ = sync_codex_profile(&store);
-    validate_all_key_clients(&store)
+pub async fn validate_all_key_clients_cmd() -> Result<StartupValidationSummary, String> {
+    run_blocking("startup validation", || {
+        let store = KeydockStore::default();
+        let _ = sync_codex_profile(&store);
+        validate_all_key_clients(&store)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn test_draft_key(
+pub async fn test_draft_key(
     id: Option<String>,
     base_url: Option<String>,
     api_key: String,
     model: Option<String>,
 ) -> ValidationResult {
-    // In the edit dialog the API key field may be left blank to keep the current
-    // key — fall back to the stored secret so detection still works.
-    let mut key = trim(&api_key);
-    if key.is_empty() {
-        if let Some(id) = id.as_ref() {
-            if let Ok(secret) = KeydockStore::default().secret(id) {
-                key = secret;
+    let task = move || {
+        // In the edit dialog the API key field may be left blank to keep the current
+        // key - fall back to the stored secret so detection still works.
+        let mut key = trim(&api_key);
+        if key.is_empty() {
+            if let Some(id) = id.as_ref() {
+                if let Ok(secret) = KeydockStore::default().secret(id) {
+                    key = secret;
+                }
             }
         }
-    }
 
-    let model = model.unwrap_or_default();
-    validate_key_with_client_probes(&key, base_url.as_deref(), &model)
+        let model = model.unwrap_or_default();
+        validate_key_with_client_probes(&key, base_url.as_deref(), &model)
+    };
+
+    match tauri::async_runtime::spawn_blocking(task).await {
+        Ok(result) => result,
+        Err(error) => {
+            ValidationResult::fail(0, format!("Validation task failed: {error}."), Vec::new())
+        }
+    }
 }
 
 #[tauri::command]
@@ -302,41 +314,50 @@ pub fn delete_key(id: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub fn validate_key_cmd(id: String) -> Result<ValidationResult, String> {
-    let store = KeydockStore::default();
-    let api_key = store.secret(&id)?;
-    let record = store.list()?.into_iter().find(|item| item.id == id);
-    let base_url = record.as_ref().map(|item| item.base_url.clone());
-    let model = record
-        .as_ref()
-        .map(|item| {
-            if trim(&item.model).is_empty() {
-                item.models.first().cloned().unwrap_or_default()
-            } else {
-                item.model.clone()
-            }
-        })
-        .unwrap_or_default();
-    // Probe each supported client family with the real endpoint shape it uses.
-    let check = validate_key_with_client_probes(&api_key, base_url.as_deref(), &model);
-    store.mark_validation(id, &check)?;
-    Ok(check)
+pub async fn validate_key_cmd(id: String) -> Result<ValidationResult, String> {
+    run_blocking("key validation", move || {
+        let store = KeydockStore::default();
+        let api_key = store.secret(&id)?;
+        let record = store.list()?.into_iter().find(|item| item.id == id);
+        let base_url = record.as_ref().map(|item| item.base_url.clone());
+        let model = record
+            .as_ref()
+            .map(|item| {
+                if trim(&item.model).is_empty() {
+                    item.models.first().cloned().unwrap_or_default()
+                } else {
+                    item.model.clone()
+                }
+            })
+            .unwrap_or_default();
+        // Probe each supported client family with the real endpoint shape it uses.
+        let check = validate_key_with_client_probes(&api_key, base_url.as_deref(), &model);
+        store.mark_validation(id, &check)?;
+        Ok(check)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn validate_key_client_cmd(id: String, client: String) -> Result<ValidationResult, String> {
-    let client = normalize_client_id(&client)?;
-    let store = KeydockStore::default();
-    let api_key = store.secret(&id)?;
-    let record = store
-        .list()?
-        .into_iter()
-        .find(|item| item.id == id)
-        .ok_or_else(|| "Key not found.".to_string())?;
-    let model = selected_record_model(&record)?;
-    let check = validate_key_for_client(&api_key, &record, &client, &model);
-    store.mark_validation(&id, &check)?;
-    Ok(check)
+pub async fn validate_key_client_cmd(
+    id: String,
+    client: String,
+) -> Result<ValidationResult, String> {
+    run_blocking("client validation", move || {
+        let client = normalize_client_id(&client)?;
+        let store = KeydockStore::default();
+        let api_key = store.secret(&id)?;
+        let record = store
+            .list()?
+            .into_iter()
+            .find(|item| item.id == id)
+            .ok_or_else(|| "Key not found.".to_string())?;
+        let model = selected_record_model(&record)?;
+        let check = validate_key_for_client(&api_key, &record, &client, &model);
+        store.mark_validation(&id, &check)?;
+        Ok(check)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -439,6 +460,16 @@ pub fn diagnostics() -> Diagnostics {
             codex_cli_available: false,
         },
     }
+}
+
+async fn run_blocking<T, F>(label: &'static str, task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|error| format!("{label} task failed: {error}."))?
 }
 
 fn sync_codex_profile(store: &KeydockStore) -> Result<CodexProfile, String> {

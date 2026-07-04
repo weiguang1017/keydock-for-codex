@@ -52,6 +52,8 @@ impl ValidationResult {
 const CLIENT_CODEX: &str = "codex";
 const CLIENT_OPENCLAW: &str = "openclaw";
 const CLIENT_HERMES: &str = "hermes";
+const MODEL_LIST_TIMEOUT_SECS: u64 = 12;
+const CLIENT_PROBE_TIMEOUT_SECS: u64 = 18;
 
 pub fn trim(value: impl AsRef<str>) -> String {
     value.as_ref().trim().to_string()
@@ -307,7 +309,7 @@ pub fn validate_key(api_key: impl AsRef<str>, base_url: Option<&str>) -> Validat
     };
 
     let client = match reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(MODEL_LIST_TIMEOUT_SECS))
         .build()
     {
         Ok(client) => client,
@@ -401,6 +403,9 @@ fn post_probe(
                 Err(error) => {
                     last_failure =
                         ValidationResult::fail(0, format!("Request failed: {error}"), Vec::new());
+                    if should_skip_remaining_payloads_after_error(&error) {
+                        break;
+                    }
                     continue;
                 }
             };
@@ -435,10 +440,21 @@ fn post_probe(
             if status == 401 || status == 403 {
                 return last_failure;
             }
+            if should_skip_remaining_payloads_after_status(status) {
+                break;
+            }
         }
     }
 
     last_failure
+}
+
+fn should_skip_remaining_payloads_after_error(error: &reqwest::Error) -> bool {
+    error.is_timeout() || error.is_connect()
+}
+
+fn should_skip_remaining_payloads_after_status(status: u16) -> bool {
+    matches!(status, 404 | 405 | 408 | 429 | 500..=599)
 }
 
 pub fn validate_clients_key(
@@ -632,7 +648,7 @@ pub fn probe_responses_key(
     };
 
     let client = match reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(45))
+        .timeout(Duration::from_secs(CLIENT_PROBE_TIMEOUT_SECS))
         .build()
     {
         Ok(client) => client,
@@ -705,7 +721,7 @@ pub fn probe_chat_completions_key(
     };
 
     let client = match reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(45))
+        .timeout(Duration::from_secs(CLIENT_PROBE_TIMEOUT_SECS))
         .build()
     {
         Ok(client) => client,
