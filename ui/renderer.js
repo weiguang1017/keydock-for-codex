@@ -880,6 +880,9 @@ function keyStatus(key, client = '') {
   if (selectedClient && !selectedClientActive && !selectedClientFailed && !isClientVerified(key, selectedClient) && !wasClientChecked(key, selectedClient)) {
     return t('notChecked');
   }
+  if (selectedClient && !selectedClientActive) {
+    return verificationStatus(key, selectedClient);
+  }
   if (isKeyInUse(key)) {
     if (selectedClientFailed) return t('unavailable');
     if (isNetworkVerified(key)) return activeUsageLabel(key);

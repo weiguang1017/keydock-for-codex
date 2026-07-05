@@ -1,6 +1,6 @@
 [package]
 name = "keydock-for-codex"
-version = "1.2.3"
+version = "1.2.4"
 description = "A desktop key dock for checking and switching Codex API keys."
 authors = ["Keydock contributors <keydock@example.com>"]
 license = "MIT"
