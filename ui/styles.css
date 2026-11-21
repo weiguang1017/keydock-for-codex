@@ -927,6 +927,7 @@ menu {
 
 .combo {
   position: relative;
+  min-width: 0;
 }
 
 .combo .combo-input {
@@ -966,7 +967,7 @@ menu {
   top: calc(100% + 4px);
   left: 0;
   right: 0;
-  max-height: 208px;
+  max-height: var(--combo-menu-height, 208px);
   margin: 0;
   padding: 4px;
   overflow-y: auto;
@@ -975,6 +976,11 @@ menu {
   border-radius: 8px;
   background: var(--surface);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+}
+
+.combo.drop-up .combo-menu {
+  top: auto;
+  bottom: calc(100% + 4px);
 }
 
 .combo-option {
@@ -988,6 +994,7 @@ menu {
 }
 
 .combo-option:hover,
+.combo-option.active,
 .combo-option.selected {
   background: var(--surface-2);
 }

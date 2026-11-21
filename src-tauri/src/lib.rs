@@ -14,6 +14,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::list_keys,
             commands::test_draft_key,
+            commands::fetch_key_models,
             commands::add_key,
             commands::update_name,
             commands::export_keys,

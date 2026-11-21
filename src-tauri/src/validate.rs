@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    io::{BufRead, BufReader},
+    time::Duration,
+};
 
 use crate::DEFAULT_BASE_URL;
 
@@ -351,6 +355,11 @@ pub fn validate_key(api_key: impl AsRef<str>, base_url: Option<&str>) -> Validat
                 Ok(value) if value.get("error").map(|e| !e.is_null()).unwrap_or(false) => {
                     ValidationResult::fail(200, extract_error_message(&body), models)
                 }
+                Ok(value) if !has_model_catalog(&value) => ValidationResult::fail(
+                    200,
+                    "The endpoint returned JSON without a model list. Check the Base URL.",
+                    Vec::new(),
+                ),
                 Ok(_) if models.is_empty() && index + 1 < endpoint_count => {
                     let result = ValidationResult::ok("The platform accepted this key.", models);
                     empty_success = Some(result.clone());
@@ -379,6 +388,11 @@ pub fn validate_key(api_key: impl AsRef<str>, base_url: Option<&str>) -> Validat
     empty_success.unwrap_or(last_failure)
 }
 
+fn has_model_catalog(payload: &Value) -> bool {
+    payload.get("data").and_then(Value::as_array).is_some()
+        || payload.get("models").and_then(Value::as_array).is_some()
+}
+
 fn post_probe(
     client: &reqwest::blocking::Client,
     endpoints: Vec<reqwest::Url>,
@@ -395,7 +409,14 @@ fn post_probe(
                 .post(endpoint.clone())
                 .bearer_auth(key)
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .header(reqwest::header::ACCEPT, "application/json")
+                .header(
+                    reqwest::header::ACCEPT,
+                    if payload.get("stream").and_then(Value::as_bool) == Some(true) {
+                        "text/event-stream"
+                    } else {
+                        "application/json"
+                    },
+                )
                 .json(payload)
                 .send()
             {
@@ -411,7 +432,13 @@ fn post_probe(
             };
 
             let status = response.status().as_u16();
-            let body = response.text().unwrap_or_default();
+            let body = match read_probe_body(response) {
+                Ok(body) => body,
+                Err(message) => {
+                    last_failure = ValidationResult::fail(status, message, Vec::new());
+                    break;
+                }
+            };
             if (200..300).contains(&status) {
                 match assess_body(&body) {
                     Ok(()) => {
@@ -440,7 +467,9 @@ fn post_probe(
             if status == 401 || status == 403 {
                 return last_failure;
             }
-            if should_skip_remaining_payloads_after_status(status) {
+            if should_skip_remaining_payloads_after_status(status)
+                || endpoint_requires_responses(status, &body)
+            {
                 break;
             }
         }
@@ -449,12 +478,67 @@ fn post_probe(
     last_failure
 }
 
+fn read_probe_body(response: reqwest::blocking::Response) -> Result<String, String> {
+    let is_stream = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.split(';').next().unwrap_or("").trim() == "text/event-stream")
+        .unwrap_or(false);
+    if !is_stream {
+        return response
+            .text()
+            .map_err(|error| format!("Could not read API response: {error}"));
+    }
+    let mut reader = BufReader::new(response);
+    let mut body = String::new();
+    let mut event_data = String::new();
+    loop {
+        let mut line = String::new();
+        let read = reader
+            .read_line(&mut line)
+            .map_err(|error| format!("Could not read API stream: {error}"))?;
+        if read == 0 {
+            return Ok(body);
+        }
+        body.push_str(&line);
+        if body.len() > 1024 * 1024 {
+            return Err("API probe stream exceeded 1 MiB without completing.".to_string());
+        }
+        if let Some(data) = line.trim_end_matches(['\r', '\n']).strip_prefix("data:") {
+            if !event_data.is_empty() {
+                event_data.push('\n');
+            }
+            event_data.push_str(data.trim_start());
+        } else if line.trim().is_empty() {
+            // Finish at the terminal event even if the server keeps the HTTP
+            // connection alive after the model is done.
+            if let Ok(event) = serde_json::from_str::<Value>(&event_data) {
+                if matches!(
+                    event.get("type").and_then(Value::as_str),
+                    Some(
+                        "response.completed" | "response.failed" | "response.incomplete" | "error"
+                    )
+                ) {
+                    return Ok(body);
+                }
+            }
+            event_data.clear();
+        }
+    }
+}
+
 fn should_skip_remaining_payloads_after_error(error: &reqwest::Error) -> bool {
     error.is_timeout() || error.is_connect()
 }
 
 fn should_skip_remaining_payloads_after_status(status: u16) -> bool {
     matches!(status, 404 | 405 | 408 | 429 | 500..=599)
+}
+
+fn endpoint_requires_responses(status: u16, body: &str) -> bool {
+    let message = body.to_ascii_lowercase();
+    status == 400 && message.contains("/responses") && message.contains("/chat/completions")
 }
 
 pub fn validate_clients_key(
@@ -542,13 +626,25 @@ pub fn validate_clients_key(
         CLIENT_CODEX.to_string(),
         client_probe_message("Codex", codex.valid, &codex.message),
     );
-    if chat.valid {
+    let openclaw = if !chat.valid && codex.valid {
+        &codex
+    } else {
+        &chat
+    };
+    if openclaw.valid {
         supported.push(CLIENT_OPENCLAW.to_string());
-        probes.push("openclaw:chat_completions".to_string());
+        probes.push(
+            if chat.valid {
+                "openclaw:chat_completions"
+            } else {
+                "openclaw:responses"
+            }
+            .to_string(),
+        );
     }
     client_messages.insert(
         CLIENT_OPENCLAW.to_string(),
-        client_probe_message("OpenClaw", chat.valid, &chat.message),
+        client_probe_message("OpenClaw", openclaw.valid, &openclaw.message),
     );
     supported = normalize_supported_clients(supported);
 
@@ -656,6 +752,19 @@ pub fn probe_responses_key(
     };
 
     let payloads = vec![
+        // Responses-only gateways can require Codex's structured input,
+        // streaming transport and stateless requests. No client impersonation
+        // headers are used; client-gated services are verified by the real CLI.
+        serde_json::json!({
+            "model": model,
+            "instructions": "Reply briefly to the connectivity check.",
+            "input": [{
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "Reply with exactly: pong" }]
+            }],
+            "store": false,
+            "stream": true,
+        }),
         serde_json::json!({
             "model": model,
             "input": "Reply with exactly: pong",
@@ -811,12 +920,27 @@ pub fn probe_chat_completions_key(
 /// Neither must count as a working key.
 pub fn assess_responses_body(body: &str) -> Result<(), String> {
     let trimmed = trim(body);
+    if trimmed.lines().any(|line| line.starts_with("data:")) {
+        return assess_responses_stream(&trimmed);
+    }
     let value: Value = serde_json::from_str(&trimmed).map_err(|_| {
         "The endpoint returned a non-API response (likely an HTML page). Check the Base URL."
             .to_string()
     })?;
     if value.get("error").map(|e| !e.is_null()).unwrap_or(false) {
         return Err(extract_error_message(&trimmed));
+    }
+    if let Some(status) = value.get("status").and_then(Value::as_str) {
+        if status != "completed" {
+            return Err(format!(
+                "The model response did not complete (status: {status}). {}",
+                value
+                    .get("incomplete_details")
+                    .filter(|details| !details.is_null())
+                    .map(Value::to_string)
+                    .unwrap_or_default()
+            ));
+        }
     }
     let looks_like_response = value.get("object").and_then(Value::as_str) == Some("response")
         || value.get("output").is_some()
@@ -833,6 +957,55 @@ pub fn assess_responses_body(body: &str) -> Result<(), String> {
             "The endpoint accepted the request but did not return a model response. Check the Base URL."
                 .to_string(),
         )
+    }
+}
+
+fn assess_responses_stream(body: &str) -> Result<(), String> {
+    let mut completed = false;
+    let mut data = Vec::new();
+    // An SSE event may use several data lines. Only a completed response
+    // proves availability; response.created, deltas and [DONE] alone do not.
+    for line in body.lines().chain(std::iter::once("")) {
+        if let Some(value) = line.strip_prefix("data:") {
+            data.push(value.trim_start());
+        } else if line.trim().is_empty() && !data.is_empty() {
+            let payload = data.join("\n");
+            data.clear();
+            if payload == "[DONE]" {
+                continue;
+            }
+            let event: Value = serde_json::from_str(&payload)
+                .map_err(|_| "The Responses stream contained an invalid JSON event.".to_string())?;
+            match event.get("type").and_then(Value::as_str) {
+                Some("error" | "response.failed" | "response.incomplete") => {
+                    let response = event.get("response").unwrap_or(&event);
+                    return Err(format!(
+                        "Responses stream failed: {}",
+                        extract_error_message(&response.to_string())
+                    ));
+                }
+                Some("response.completed") => {
+                    let response = event.get("response").ok_or_else(|| {
+                        "The completed event did not contain a model response.".to_string()
+                    })?;
+                    assess_responses_body(&response.to_string())?;
+                    completed = true;
+                }
+                _ if event
+                    .get("error")
+                    .map(|error| !error.is_null())
+                    .unwrap_or(false) =>
+                {
+                    return Err(extract_error_message(&payload));
+                }
+                _ => {}
+            }
+        }
+    }
+    if completed {
+        Ok(())
+    } else {
+        Err("The Responses stream ended without a completed model response.".to_string())
     }
 }
 
@@ -903,6 +1076,100 @@ mod tests {
     }
 
     #[test]
+    fn responses_status_must_be_completed() {
+        for status in ["failed", "incomplete", "in_progress", "queued", "cancelled"] {
+            let body = serde_json::json!({"id":"resp_test", "object":"response", "status":status, "output":[]});
+            assert!(
+                assess_responses_body(&body.to_string()).is_err(),
+                "{status}"
+            );
+        }
+        assert!(
+            assess_responses_body(r#"{"object":"response","status":"completed","output":[]}"#)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn does_not_retry_an_explicitly_disabled_chat_endpoint() {
+        assert!(endpoint_requires_responses(
+            400,
+            r#"{"error":{"message":"本站已停用 /v1/chat/completions 接口，请改用 /v1/responses（Responses API）。"}}"#
+        ));
+        assert!(!endpoint_requires_responses(
+            400,
+            r#"{"error":{"message":"max_tokens is unsupported"}}"#
+        ));
+        assert!(!endpoint_requires_responses(
+            200,
+            "/v1/chat/completions /v1/responses"
+        ));
+    }
+
+    #[test]
+    fn responses_stream_requires_a_successful_terminal_event() {
+        let completed = concat!(
+            ": keepalive\r\n\r\n",
+            "event: response.created\r\ndata: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\r\n\r\n",
+            "event: response.completed\r\ndata: {\"type\":\"response.completed\",\r\n",
+            "data: \"response\":{\"id\":\"resp_test\",\"object\":\"response\",\"status\":\"completed\",\"output\":[]}}\r\n\r\n",
+            "data: [DONE]\r\n\r\n"
+        );
+        assert!(assess_responses_body(completed).is_ok());
+        for body in [
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_test\"}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"pong\"}\n\ndata: [DONE]\n\n",
+            "data: {\"type\":\"response.completed\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"failed\"}}\n\n",
+            "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"No balance\"}}}\n\n",
+            "data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\"}}\n\n",
+            "data: {\"type\":\"error\",\"message\":\"Invalid key\"}\n\n",
+            "data: not-json\n\n",
+        ] {
+            assert!(assess_responses_body(body).is_err(), "{body}");
+        }
+        assert!(assess_responses_body(
+            "data: {\"type\":\"error\",\"message\":\"Invalid key\"}\n\n"
+        )
+        .unwrap_err()
+        .contains("Invalid key"));
+    }
+
+    #[test]
+    fn streamed_probe_finishes_without_waiting_for_connection_close() {
+        use std::{
+            io::{Read, Write},
+            net::TcpListener,
+            sync::mpsc,
+            thread,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (release, wait) = mpsc::channel::<()>();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request).unwrap();
+            stream.write_all(concat!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nConnection: keep-alive\r\n\r\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"object\":\"response\",\"status\":\"completed\",\"output\":[]}}\n\n"
+            ).as_bytes()).unwrap();
+            let _ = wait.recv_timeout(Duration::from_secs(3));
+        });
+        let response = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap()
+            .get(format!("http://{address}/responses"))
+            .send()
+            .unwrap();
+        let body = read_probe_body(response);
+        let _ = release.send(());
+        server.join().unwrap();
+        assert!(assess_responses_body(&body.unwrap()).is_ok());
+    }
+
+    #[test]
     fn judges_chat_completion_bodies() {
         assert!(assess_chat_completions_body(
             r#"{"id":"chatcmpl-1","object":"chat.completion","choices":[]}"#
@@ -945,6 +1212,19 @@ mod tests {
     fn extracts_models() {
         let payload = serde_json::json!({ "data": [{ "id": "gpt-z" }, { "id": "gpt-a" }] });
         assert_eq!(extract_models(&payload), vec!["gpt-a", "gpt-z"]);
+    }
+
+    #[test]
+    fn model_discovery_requires_a_catalog_instead_of_arbitrary_json() {
+        assert!(has_model_catalog(&serde_json::json!({"data": []})));
+        assert!(has_model_catalog(&serde_json::json!({"models": ["gpt-a"]})));
+        for payload in [
+            serde_json::json!({"status": "ok"}),
+            serde_json::json!({"data": {"message":"welcome"}}),
+            Value::Null,
+        ] {
+            assert!(!has_model_catalog(&payload));
+        }
     }
 
     #[test]

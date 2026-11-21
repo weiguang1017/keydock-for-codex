@@ -19,6 +19,10 @@ Keydock for Codex 是一款基于 Rust/Tauri 的桌面端 Codex API Key 管理�
 - 支持英文、中文、日文界面，会自动匹配系统语言，也可以手动切换。
 - 新增 Key 时先校验，失败不保存。
 - 新增 Key 需要填写名称、Base URL、API Key，并在校验后显示平台返回的模型列表和可用状态。
+- 模型下拉按钮显示完整列表，支持输入筛选和键盘选择；新增弹窗切换模型后需重新测试，失败时仍保留已发现的模型。
+- v1.2.6 的编辑弹窗使用“获取模型”校验 Key 并读取模型列表，Key 留空时使用已保存的 Key；不执行推理，实际客户端调用状态使用卡片上的“检测”。
+- 支持流式 Responses API，并在普通 HTTP 探测失败时使用本机 Codex CLI 验证；OpenClaw 可按检测结果使用 Responses 或 Chat Completions。
+- v1.2.5 可直接发现 Codex / ChatGPT 桌面版内置客户端和常见本地安装，修复 Finder 启动时因缺少终端 PATH 而误报找不到 Codex 的问题。
 - 一键切换当前 Key，写入本地配置并尽量重启 Codex Desktop；如果自动重启失败，界面会提示手动重启。
 - Rust 端负责配置读写、Key 校验、本地存储和 Tauri 命令；Web UI 作为 Tauri 静态前端打包。
 
@@ -38,6 +42,17 @@ Keydock for Codex 是一款基于 Rust/Tauri 的桌面端 Codex API Key 管理�
 cd src-tauri
 cargo test
 ```
+
+在仓库根目录运行界面回归测试（需要 Node.js；测试使用模拟桌面桥接，不会读取真实 Key 或调用付费模型）：
+
+```sh
+npm install --no-save --package-lock=false playwright
+npx playwright install chromium webkit
+node --test tests/ui.test.cjs
+UI_BROWSER=webkit node --test tests/ui.test.cjs
+```
+
+遇到「仅支持编程客户端」或「请改用 Responses API」时，参见[接口兼容性说明](docs/validation-compatibility.md)。
 
 运行桌面应用：
 
@@ -122,6 +137,9 @@ Keydock for Codex is a Rust/Tauri desktop API key manager for Codex. It is built
 - English, Chinese, and Japanese UI text with automatic system-language matching and a manual selector.
 - Validate a key before saving it.
 - Adding a key requires name, Base URL, and API key, then shows platform-provided models and availability status after validation.
+- The model dropdown shows the full catalog, supports typing and keyboard selection, and retains discovered models after a failed add-key test. Changing the model in the add dialog invalidates that test.
+- In v1.2.6, the edit dialog uses Fetch models to authenticate the key and read the model catalog without inference or CLI checks. Leaving the key blank uses the saved key; the card's Check action verifies actual client inference.
+- Supports streaming Responses API checks and a native Codex CLI fallback. OpenClaw configuration uses the verified Responses or Chat Completions protocol.
 - Switch the active key, write the local config, and try to restart Codex Desktop; if automatic restart fails, the UI asks you to restart Codex manually.
 - Rust owns config IO, key validation, local storage, and Tauri commands; the Web UI is packaged as the Tauri static frontend.
 

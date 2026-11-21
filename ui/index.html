@@ -104,6 +104,7 @@
     <dialog id="editDialog">
       <form method="dialog">
         <h3 data-i18n="editKey">Edit key</h3>
+        <p class="dialog-note" data-i18n="fetchModelsNote">Fetch models to check the key and load the platform's model list. Use Check on the key card to test client inference.</p>
         <label>
           <span data-i18n="name">Name</span>
           <input id="editName" type="text">
@@ -120,7 +121,7 @@
           </div>
         </label>
         <div class="dialog-test">
-          <button id="validateEditButton" type="button" data-i18n="test">Test</button>
+          <button id="validateEditButton" type="button" data-i18n="fetchModels">Fetch models</button>
           <div class="combo" id="editModelCombo">
             <input id="editModelField" class="combo-input" aria-label="Model" autocomplete="off" data-i18n-placeholder="modelInputPlaceholder">
             <button type="button" class="combo-toggle" tabindex="-1" aria-label="Toggle model list">▾</button>

@@ -13,7 +13,8 @@ use crate::codex::{self, CodexProfile};
 use crate::store::{ExportBundle, ImportSummary, KeyRecord, KeydockStore, MetadataUpdate};
 use crate::validate::{
     normalize_or_default, normalize_supported_clients, probe_chat_completions_key,
-    probe_responses_key, trim, unique_strings, validate_clients_key, ValidationResult,
+    probe_responses_key, trim, unique_strings, validate_clients_key, validate_key,
+    ValidationResult,
 };
 use crate::DEFAULT_BASE_URL;
 
@@ -22,6 +23,7 @@ const CLIENT_OPENCLAW: &str = "openclaw";
 const CLIENT_HERMES: &str = "hermes";
 const CODEX_RESPONSES_PROBE: &str = "codex:responses";
 const OPENCLAW_CHAT_PROBE: &str = "openclaw:chat_completions";
+const OPENCLAW_RESPONSES_PROBE: &str = "openclaw:responses";
 const CODEX_CLI_PROBE: &str = "codex:cli_exec";
 const HERMES_PROBE: &str = "hermes:cli_oneshot_custom_no_fallback_v2";
 const LEGACY_CODEX_LOCAL_CONFIG_PROBE: &str = "codex:local_config";
@@ -126,6 +128,49 @@ pub async fn test_draft_key(
             ValidationResult::fail(0, format!("Validation task failed: {error}."), Vec::new())
         }
     }
+}
+
+#[tauri::command]
+pub async fn fetch_key_models(
+    id: Option<String>,
+    base_url: Option<String>,
+    api_key: String,
+) -> ValidationResult {
+    match tauri::async_runtime::spawn_blocking(move || {
+        fetch_key_models_from_store(
+            &KeydockStore::default(),
+            id.as_deref(),
+            base_url.as_deref(),
+            &api_key,
+        )
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            ValidationResult::fail(0, format!("Model discovery failed: {error}."), Vec::new())
+        }
+    }
+}
+
+fn fetch_key_models_from_store(
+    store: &KeydockStore,
+    id: Option<&str>,
+    base_url: Option<&str>,
+    api_key: &str,
+) -> ValidationResult {
+    let key = if trim(api_key).is_empty() {
+        match id.map(|id| store.secret(id)) {
+            Some(Ok(key)) => key,
+            Some(Err(error)) => return ValidationResult::fail(0, error, Vec::new()),
+            None => return ValidationResult::fail(0, "API key is required.", Vec::new()),
+        }
+    } else {
+        trim(api_key)
+    };
+    // Discovery authenticates against /models only. It must never trigger an
+    // inference, a CLI process, a profile sync or a check of the selected model.
+    validate_key(&key, base_url)
 }
 
 #[tauri::command]
@@ -235,7 +280,7 @@ pub fn update_metadata(
     base_url: Option<String>,
     model: Option<String>,
     api_key: Option<String>,
-    validation: Option<ValidationResult>,
+    model_listing: Option<ValidationResult>,
 ) -> Result<KeyRecord, String> {
     let store = KeydockStore::default();
     let previous = store.list()?.into_iter().find(|item| item.id == id);
@@ -272,8 +317,8 @@ pub fn update_metadata(
         },
     )?;
 
-    if let Some(result) = validation.as_ref().filter(|result| result.valid) {
-        record = store.mark_validation(&id, result)?;
+    if let Some(result) = model_listing.as_ref().filter(|result| result.valid) {
+        record = store.mark_model_listing(&id, result)?;
     }
 
     // For the active key, keep Codex's own config (~/.codex) in sync so the edit
@@ -496,9 +541,26 @@ fn validate_key_with_client_probes(
         .supported_clients
         .iter()
         .any(|client| client == CLIENT_CODEX)
-        && probe_codex_cli_support(api_key, base_url, &probe_model).is_ok()
     {
-        add_verified_client_support(&mut result, CLIENT_CODEX, CODEX_CLI_PROBE, &probe_model);
+        match probe_codex_cli_support(api_key, base_url, &probe_model) {
+            Ok(()) => {
+                add_verified_client_support(
+                    &mut result,
+                    CLIENT_CODEX,
+                    CODEX_CLI_PROBE,
+                    &probe_model,
+                );
+            }
+            Err(error) => {
+                let http_error = result
+                    .client_messages
+                    .get(CLIENT_CODEX)
+                    .cloned()
+                    .unwrap_or_default();
+                let message = codex_probe_failure_message(&http_error, &error);
+                set_client_message(&mut result, CLIENT_CODEX, message);
+            }
+        }
     }
 
     match probe_hermes_client_support(api_key, base_url, &probe_model) {
@@ -513,6 +575,19 @@ fn validate_key_with_client_probes(
             );
             sanitize_hermes_client_support(&mut result);
         }
+    }
+    if result.supported_clients.is_empty() {
+        // Include the native-client fallback diagnostics; a restricted HTTP
+        // probe alone is not evidence that the key is unusable in Codex.
+        result.message = format!(
+            "Client support could not be confirmed. {}",
+            all_client_ids()
+                .iter()
+                .filter_map(|client| result.client_messages.get(*client))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
     }
     result
 }
@@ -688,8 +763,23 @@ fn probe_openclaw_client_support(
     if result.valid {
         add_verified_client_support(&mut result, CLIENT_OPENCLAW, OPENCLAW_CHAT_PROBE, model);
     } else {
-        result.supported_clients = Vec::new();
-        result.client_support_probes = Vec::new();
+        let chat_error = result.message.clone();
+        result = probe_responses_key(api_key, base_url, model);
+        if result.valid {
+            add_verified_client_support(
+                &mut result,
+                CLIENT_OPENCLAW,
+                OPENCLAW_RESPONSES_PROBE,
+                model,
+            );
+        } else {
+            result.message = format!(
+                "Chat Completions: {chat_error} Responses: {}",
+                result.message
+            );
+            result.supported_clients = Vec::new();
+            result.client_support_probes = Vec::new();
+        }
     }
     result
 }
@@ -1148,13 +1238,16 @@ fn probe_codex_cli_support(
         cli::apply_command_path(&mut command, &cli::runtime_dirs_for_path(&codex_path));
         command
             .env("CODEX_HOME", &temp_dir)
+            // Never validate a draft with credentials inherited from the app
+            // or shell instead of the isolated auth.json written above.
+            .env_remove("CODEX_API_KEY")
+            .env_remove("OPENAI_API_KEY")
+            .env_remove("OPENAI_BASE_URL")
+            .stdin(Stdio::null())
+            .current_dir(&temp_dir)
             .args(codex_probe_args(&temp_dir, model));
         let output = run_command_with_timeout(&mut command, Duration::from_secs(75))?;
-        if output.status_success {
-            Ok(())
-        } else {
-            Err(codex_cli_failure_message(&output))
-        }
+        assess_codex_cli_output(&output)
     })();
     let _ = fs::remove_dir_all(&temp_dir);
     probe_result
@@ -1165,7 +1258,9 @@ fn codex_probe_args(temp_dir: &Path, model: &str) -> Vec<String> {
         "--ask-for-approval".to_string(),
         "never".to_string(),
         "exec".to_string(),
-        "--ignore-rules".to_string(),
+        "--json".to_string(),
+        "--color".to_string(),
+        "never".to_string(),
         "--skip-git-repo-check".to_string(),
         "--ephemeral".to_string(),
         "--sandbox".to_string(),
@@ -1178,13 +1273,62 @@ fn codex_probe_args(temp_dir: &Path, model: &str) -> Vec<String> {
     ]
 }
 
+fn assess_codex_cli_output(output: &CommandRun) -> Result<(), String> {
+    if !output.status_success {
+        return Err(codex_cli_failure_message(output));
+    }
+    let mut completed = false;
+    let mut answered = false;
+    let mut last_error = None;
+    for line in output.stdout.lines() {
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        match event.get("type").and_then(serde_json::Value::as_str) {
+            Some("turn.failed") => {
+                let detail = event.get("error").unwrap_or(&event).to_string();
+                return Err(format!("Codex CLI inference failed: {detail}"));
+            }
+            Some("error") => last_error = Some(event.to_string()),
+            Some("turn.completed") => completed = true,
+            Some("item.completed") => {
+                if let Some(item) = event.get("item") {
+                    if item.get("type").and_then(serde_json::Value::as_str) == Some("agent_message")
+                        && item
+                            .get("text")
+                            .and_then(serde_json::Value::as_str)
+                            .map(|text| !text.trim().is_empty())
+                            .unwrap_or(false)
+                    {
+                        answered = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if completed && answered {
+        Ok(())
+    } else if let Some(error) = last_error {
+        Err(format!("Codex CLI inference failed: {error}"))
+    } else {
+        Err("Codex CLI exited without a completed inference and an assistant reply; this key has not been verified.".to_string())
+    }
+}
+
 fn switch_key_for_openclaw(
     api_key: &str,
     record: &KeyRecord,
     model: &str,
 ) -> Result<SwitchResult, String> {
     let openclaw_path = find_openclaw_path()?;
-    apply_openclaw_profile(&openclaw_path, api_key, &record.base_url, model)?;
+    apply_openclaw_profile(
+        &openclaw_path,
+        api_key,
+        &record.base_url,
+        model,
+        openclaw_api_for_record(record),
+    )?;
     let mut warning = String::new();
     let mut restarted = false;
     if openclaw_gateway_running(&openclaw_path) {
@@ -1379,7 +1523,7 @@ fn hermes_api_error_from_output(output: &CommandRun) -> Option<String> {
                 || lower.contains("api 不支持所选模型")
                 || lower.contains("不支持所选模型")
         })
-        .or_else(|| Some(combined))
+        .or(Some(combined))
 }
 
 fn replace_yaml_section(content: &str, section: &str, replacement: &str) -> String {
@@ -1431,6 +1575,7 @@ fn apply_openclaw_profile(
     api_key: &str,
     base_url: &str,
     model: &str,
+    api: &str,
 ) -> Result<(), String> {
     let api_key = trim(api_key);
     if api_key.is_empty() {
@@ -1441,7 +1586,38 @@ fn apply_openclaw_profile(
     if model.is_empty() {
         return Err("A model is required to update OpenClaw configuration.".to_string());
     }
-    let model_ref = openclaw_model_ref(&model);
+    let patch = openclaw_profile_patch(&api_key, &base_url, &model, api);
+    let patch = serde_json::to_string_pretty(&patch).map_err(|error| error.to_string())?;
+    let output = run_command_with_stdin(openclaw_path, &["config", "patch", "--stdin"], &patch)?;
+    if output.status_success {
+        Ok(())
+    } else {
+        Err(command_failure_message(
+            "OpenClaw config update failed.",
+            &output,
+        ))
+    }
+}
+
+fn openclaw_api_for_record(record: &KeyRecord) -> &'static str {
+    if record
+        .client_support_probes
+        .iter()
+        .any(|probe| probe == OPENCLAW_CHAT_PROBE)
+    {
+        "openai-completions"
+    } else {
+        "openai-responses"
+    }
+}
+
+fn openclaw_profile_patch(
+    api_key: &str,
+    base_url: &str,
+    model: &str,
+    api: &str,
+) -> serde_json::Value {
+    let model_ref = openclaw_model_ref(model);
     let provider_model = model_ref
         .rsplit('/')
         .next()
@@ -1449,13 +1625,14 @@ fn apply_openclaw_profile(
         .to_string();
     let mut agent_models = serde_json::Map::new();
     agent_models.insert(model_ref.clone(), serde_json::json!({}));
-    let patch = serde_json::json!({
+    serde_json::json!({
         "env": {
             "OPENAI_API_KEY": api_key,
         },
         "models": {
             "providers": {
                 "openai": {
+                    "api": api,
                     "apiKey": api_key,
                     "baseUrl": base_url,
                     "models": [
@@ -1472,17 +1649,7 @@ fn apply_openclaw_profile(
                 "models": agent_models,
             }
         }
-    });
-    let patch = serde_json::to_string_pretty(&patch).map_err(|error| error.to_string())?;
-    let output = run_command_with_stdin(openclaw_path, &["config", "patch", "--stdin"], &patch)?;
-    if output.status_success {
-        Ok(())
-    } else {
-        Err(command_failure_message(
-            "OpenClaw config update failed.",
-            &output,
-        ))
-    }
+    })
 }
 
 fn openclaw_model_ref(model: &str) -> String {
@@ -2029,6 +2196,7 @@ mod tests {
             masked_key: "sk-test...1111".to_string(),
             model: model.to_string(),
             models: vec![model.to_string()],
+            model_catalog_checked_at: String::new(),
             supported_clients: Vec::new(),
             client_support_probes: Vec::new(),
             client_messages: HashMap::new(),
@@ -2046,7 +2214,129 @@ mod tests {
         }
     }
 
+    #[test]
+    fn catalog_fetch_authenticates_with_get_and_never_claims_client_support() {
+        use std::io::{BufRead, BufReader};
+        let _env = env_guard();
+        let directory =
+            std::env::temp_dir().join(format!("keydock-model-fetch-{}", Uuid::new_v4()));
+        let store = KeydockStore::new(&directory);
+        let record = store
+            .add(
+                "Models",
+                "https://unused.test/v1",
+                "sk-stored-catalog-key",
+                &ValidationResult::ok("Saved.", vec![]),
+            )
+            .unwrap();
+        for (status, body, supplied_key, expected_valid, count) in [
+            (
+                "200 OK",
+                r#"{"data":[{"id":"gpt-z"},{"id":"gpt-a"}]}"#,
+                "",
+                true,
+                2,
+            ),
+            (
+                "200 OK",
+                r#"{"models":["gpt-a"]}"#,
+                "sk-replacement-key",
+                true,
+                1,
+            ),
+            ("200 OK", r#"{"data":[]}"#, "", true, 0),
+            (
+                "401 Unauthorized",
+                r#"{"error":{"message":"Invalid key"}}"#,
+                "",
+                false,
+                0,
+            ),
+            (
+                "200 OK",
+                "<!doctype html><html>Welcome</html>",
+                "",
+                false,
+                0,
+            ),
+            ("200 OK", r#"{"status":"ok"}"#, "", false, 0),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+            let server = thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error)
+                            if error.kind() == std::io::ErrorKind::WouldBlock
+                                && Instant::now() < deadline =>
+                        {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        _ => panic!("model discovery did not connect to its endpoint"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut request = String::new();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                        break;
+                    }
+                    request.push_str(&line);
+                }
+                write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                request
+            });
+            let result = fetch_key_models_from_store(
+                &store,
+                Some(&record.id),
+                Some(&base_url),
+                supplied_key,
+            );
+            let request = server.join().unwrap();
+            assert!(request.starts_with("GET /v1/models HTTP/1.1"));
+            let expected_key = if supplied_key.is_empty() {
+                "sk-stored-catalog-key"
+            } else {
+                supplied_key
+            };
+            assert!(request
+                .to_ascii_lowercase()
+                .contains(&format!("authorization: bearer {expected_key}")));
+            assert_eq!(result.valid, expected_valid, "{}", result.message);
+            assert_eq!(result.models.len(), count);
+            assert!(result.supported_clients.is_empty());
+            assert!(result.client_support_probes.is_empty());
+            assert!(result.model.is_empty());
+        }
+        assert!(!fetch_key_models_from_store(&store, None, Some("https://unused.test"), "").valid);
+        assert!(
+            !fetch_key_models_from_store(&store, Some("missing"), Some("https://unused.test"), "")
+                .valid
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[derive(Clone, Copy)]
+    enum ProbeServerMode {
+        Both,
+        ResponsesOnly,
+        ClientRestricted,
+    }
+
     fn start_probe_server() -> (String, Arc<AtomicBool>, JoinHandle<()>) {
+        start_probe_server_with_mode(ProbeServerMode::Both)
+    }
+
+    fn start_probe_server_with_mode(
+        mode: ProbeServerMode,
+    ) -> (String, Arc<AtomicBool>, JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -2055,7 +2345,7 @@ mod tests {
         let handle = thread::spawn(move || {
             while !stop_thread.load(Ordering::Relaxed) {
                 match listener.accept() {
-                    Ok((mut stream, _)) => handle_probe_request(&mut stream),
+                    Ok((mut stream, _)) => handle_probe_request(&mut stream, mode),
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(10));
                     }
@@ -2066,12 +2356,26 @@ mod tests {
         (base_url, stop, handle)
     }
 
-    fn handle_probe_request(stream: &mut std::net::TcpStream) {
+    fn handle_probe_request(stream: &mut std::net::TcpStream, mode: ProbeServerMode) {
         let mut buffer = [0_u8; 8192];
         let read = stream.read(&mut buffer).unwrap_or(0);
         let request = String::from_utf8_lossy(&buffer[..read]);
         let (status, body) = if request.starts_with("GET /v1/models ") {
             ("200 OK", r#"{"data":[{"id":"gpt-startup-check"}]}"#)
+        } else if matches!(mode, ProbeServerMode::ClientRestricted)
+            && request.starts_with("POST /v1/responses ")
+        {
+            (
+                "403 Forbidden",
+                r#"{"error":{"message":"This service only supports coding clients. SDK requests are not supported."}}"#,
+            )
+        } else if !matches!(mode, ProbeServerMode::Both)
+            && request.starts_with("POST /v1/chat/completions ")
+        {
+            (
+                "400 Bad Request",
+                r#"{"error":{"message":"/v1/chat/completions is disabled; use /v1/responses."}}"#,
+            )
         } else if request.starts_with("POST /v1/responses ") {
             (
                 "200 OK",
@@ -2090,6 +2394,166 @@ mod tests {
             body.len()
         );
         let _ = stream.write_all(response.as_bytes());
+    }
+
+    #[cfg(unix)]
+    fn run_restricted_probe_with_mock_cli(stdout: &str) -> ValidationResult {
+        use std::os::unix::fs::PermissionsExt;
+        let _env = env_guard();
+        let directory = std::env::temp_dir().join(format!("keydock-cli-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("codex");
+        let marker = directory.join("probe-home");
+        fs::write(
+            &path,
+            format!(
+                r#"#!/bin/sh
+set -eu
+test -z "${{CODEX_API_KEY-}}"
+test -z "${{OPENAI_API_KEY-}}"
+test -z "${{OPENAI_BASE_URL-}}"
+grep -q 'sk-probe-draft-only' "$CODEX_HOME/auth.json"
+grep -q 'wire_api = "responses"' "$CODEX_HOME/config.toml"
+printf '%s' "$CODEX_HOME" > '{}'
+cat <<'KEYDOCK_EVENTS'
+{stdout}
+KEYDOCK_EVENTS
+"#,
+                marker.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        let (base_url, stop, server) =
+            start_probe_server_with_mode(ProbeServerMode::ClientRestricted);
+        let environment = [
+            ("CKM_CODEX_PATH", Some(path.as_os_str())),
+            ("CKM_DISABLE_CODEX_CLI_PROBE", None),
+            ("CKM_DISABLE_HERMES_PROBE", Some(std::ffi::OsStr::new("1"))),
+            ("CKM_SKIP_NETWORK_VALIDATION_FOR_TESTS", None),
+            (
+                "CODEX_API_KEY",
+                Some(std::ffi::OsStr::new("wrong-inherited-key")),
+            ),
+            (
+                "OPENAI_API_KEY",
+                Some(std::ffi::OsStr::new("wrong-inherited-key")),
+            ),
+            (
+                "OPENAI_BASE_URL",
+                Some(std::ffi::OsStr::new("https://wrong-provider.test/v1")),
+            ),
+        ];
+        let previous = environment
+            .iter()
+            .map(|(key, _)| (*key, std::env::var_os(key)))
+            .collect::<Vec<_>>();
+        for (key, value) in environment {
+            if let Some(value) = value {
+                std::env::set_var(key, value);
+            } else {
+                std::env::remove_var(key);
+            }
+        }
+        let result = validate_key_with_client_probes(
+            "sk-probe-draft-only",
+            Some(&base_url),
+            "gpt-startup-check",
+        );
+        for (key, value) in previous {
+            restore_env_var(key, value);
+        }
+        stop.store(true, Ordering::Relaxed);
+        server.join().unwrap();
+        let probe_home = fs::read_to_string(&marker);
+        let _ = fs::remove_dir_all(&directory);
+        let probe_home =
+            probe_home.expect("the native CLI must run with the isolated draft credentials");
+        assert!(
+            !Path::new(&probe_home).exists(),
+            "temporary credentials must be removed"
+        );
+        result
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restricted_provider_can_be_verified_by_native_codex_without_chat_completions() {
+        let result = run_restricted_probe_with_mock_cli(concat!(
+            "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"OK\"}}\n",
+            "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}"
+        ));
+        assert!(result.valid, "{}", result.message);
+        assert_eq!(result.supported_clients, vec![CLIENT_CODEX]);
+        assert_eq!(result.client_support_probes, vec![CODEX_CLI_PROBE]);
+        assert_eq!(result.models, vec!["gpt-startup-check"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn draft_probe_preserves_both_http_and_native_cli_failure_diagnostics() {
+        let result = run_restricted_probe_with_mock_cli(
+            r#"{"type":"turn.failed","error":{"message":"provider rejected this model"}}"#,
+        );
+        assert!(!result.valid);
+        assert!(result.supported_clients.is_empty());
+        assert!(result.message.contains("403"));
+        assert!(result.message.contains("provider rejected this model"));
+        assert!(result.message.contains("/v1/responses"));
+        assert_eq!(result.models, vec!["gpt-startup-check"]);
+    }
+
+    #[test]
+    fn openclaw_can_use_a_responses_only_provider() {
+        let _env = env_guard();
+        let (base_url, stop, server) = start_probe_server_with_mode(ProbeServerMode::ResponsesOnly);
+        let all_clients =
+            validate_clients_key("sk-local-test", Some(&base_url), "gpt-startup-check");
+        let openclaw =
+            probe_openclaw_client_support("sk-local-test", Some(&base_url), "gpt-startup-check");
+        stop.store(true, Ordering::Relaxed);
+        server.join().unwrap();
+        assert!(all_clients.valid);
+        assert!(all_clients
+            .supported_clients
+            .iter()
+            .any(|client| client == CLIENT_OPENCLAW));
+        assert!(all_clients
+            .client_support_probes
+            .iter()
+            .any(|probe| probe == OPENCLAW_RESPONSES_PROBE));
+        assert!(openclaw.valid, "{}", openclaw.message);
+        assert_eq!(
+            openclaw.client_support_probes,
+            vec![OPENCLAW_RESPONSES_PROBE]
+        );
+    }
+
+    #[test]
+    fn openclaw_configuration_uses_the_verified_protocol() {
+        for (probes, expected) in [
+            (
+                vec![OPENCLAW_RESPONSES_PROBE.to_string()],
+                "openai-responses",
+            ),
+            (vec![OPENCLAW_CHAT_PROBE.to_string()], "openai-completions"),
+            (vec![], "openai-responses"),
+        ] {
+            let mut record = test_key_record("https://provider.test/v1", "gpt-test");
+            record.client_support_probes = probes;
+            let api = openclaw_api_for_record(&record);
+            let patch = openclaw_profile_patch("sk-test", &record.base_url, &record.model, api);
+            assert_eq!(patch["models"]["providers"]["openai"]["api"], expected);
+            assert_eq!(
+                patch["models"]["providers"]["openai"]["baseUrl"],
+                record.base_url
+            );
+            assert_eq!(patch["models"]["providers"]["openai"]["apiKey"], "sk-test");
+            assert_eq!(
+                patch["agents"]["defaults"]["model"]["primary"],
+                "openai/gpt-test"
+            );
+        }
     }
 
     #[test]
@@ -2562,8 +3026,96 @@ model:
 
         assert!(approval_index < exec_index);
         assert_eq!(args[approval_index + 1], "never");
-        assert_eq!(args[exec_index + 1], "--ignore-rules");
+        assert_eq!(args[exec_index + 1], "--json");
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--sandbox", "read-only"]));
         assert!(args.windows(2).any(|pair| pair == ["-m", "gpt-5.5"]));
+    }
+
+    #[test]
+    fn native_codex_requires_a_completed_turn_and_an_assistant_reply() {
+        for stdout in [
+            "",
+            "OK",
+            r#"{"type":"turn.completed"}"#,
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"OK"}}"#,
+            "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"OK\"}}\n{\"type\":\"turn.failed\",\"error\":{\"message\":\"quota exhausted\"}}",
+        ] {
+            assert!(assess_codex_cli_output(&CommandRun {
+                status_success: true, stdout: stdout.to_string(), stderr: String::new()
+            }).is_err());
+        }
+        let success = "{\"type\":\"error\",\"message\":\"Reconnecting...\"}\n{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"OK\"}}\n{\"type\":\"turn.completed\"}";
+        assert!(assess_codex_cli_output(&CommandRun {
+            status_success: true,
+            stdout: success.to_string(),
+            stderr: String::new()
+        })
+        .is_ok());
+        assert!(assess_codex_cli_output(&CommandRun {
+            status_success: false,
+            stdout: success.to_string(),
+            stderr: "CLI failed".to_string()
+        })
+        .is_err());
+    }
+
+    #[test]
+    #[ignore = "explicit live catalog diagnostic: GET /models for CKM_LIVE_CHECK_LABEL only"]
+    fn saved_key_models_live_diagnostic() {
+        let label = std::env::var("CKM_LIVE_CHECK_LABEL")
+            .expect("set CKM_LIVE_CHECK_LABEL to the exact saved key label");
+        let store = KeydockStore::default();
+        let record = store
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|record| record.label == label)
+            .expect("saved key label was not found");
+        let result =
+            fetch_key_models_from_store(&store, Some(&record.id), Some(&record.base_url), "");
+        println!(
+            "{}",
+            serde_json::json!({
+                "label": label, "valid": result.valid, "statusCode": result.status_code,
+                "modelCount": result.models.len(), "probes": result.client_support_probes,
+            })
+        );
+        assert!(
+            result.valid,
+            "model catalog request failed (status {})",
+            result.status_code
+        );
+        assert!(result.client_support_probes.is_empty());
+    }
+
+    #[test]
+    #[ignore = "explicit live diagnostic: reads CKM_LIVE_CHECK_LABEL and tests only that saved key"]
+    fn saved_key_codex_live_diagnostic() {
+        let label = std::env::var("CKM_LIVE_CHECK_LABEL")
+            .expect("set CKM_LIVE_CHECK_LABEL to the exact saved key label");
+        let store = KeydockStore::default();
+        let record = store
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|record| record.label == label)
+            .expect("saved key label was not found");
+        let key = store.secret(&record.id).unwrap();
+        let model = selected_record_model(&record).unwrap();
+        let executable = cli::find_codex_path().unwrap();
+        let result = probe_codex_client_support(&key, Some(&record.base_url), &model);
+        let message = result.message.replace(&key, "[redacted]");
+        println!(
+            "{}",
+            serde_json::json!({
+                "label": label, "codexExecutable": executable,
+                "valid": result.valid, "statusCode": result.status_code,
+                "probes": result.client_support_probes, "message": message,
+            })
+        );
+        assert!(result.valid, "{message}");
     }
 
     #[test]

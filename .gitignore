@@ -1,5 +1,7 @@
 build/
 marketing/
+docs/
+tests/
 .omc/
 dist/
 node_modules/

@@ -22,6 +22,8 @@ pub struct KeyRecord {
     pub masked_key: String,
     pub model: String,
     pub models: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model_catalog_checked_at: String,
     #[serde(default = "default_supported_clients")]
     pub supported_clients: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -52,6 +54,7 @@ pub struct MetadataUpdate {
     pub base_url: Option<String>,
     pub model: Option<String>,
     pub models: Option<Vec<String>>,
+    pub model_catalog_checked_at: Option<String>,
     pub available: Option<bool>,
     pub status_code: Option<u16>,
     pub validation_message: Option<String>,
@@ -200,6 +203,7 @@ impl KeydockStore {
             masked_key: mask_key(&api_key),
             model: selected_model,
             models,
+            model_catalog_checked_at: String::new(),
             supported_clients: normalize_supported_clients(validation.supported_clients.clone()),
             client_support_probes: unique_strings(validation.client_support_probes.clone()),
             client_messages: clean_client_messages(validation.client_messages.clone()),
@@ -274,7 +278,15 @@ impl KeydockStore {
             if !selected_model.is_empty() {
                 record.model = selected_model;
             }
-            record.models = unique_strings(models.into_iter().chain(record.models.clone()));
+            if key_changed || base_changed {
+                record.models.clear();
+                record.model_catalog_checked_at.clear();
+            }
+            // Once the provider has returned a catalog, a local Codex cache
+            // must not add unrelated models or replace an authenticated empty list.
+            if record.model_catalog_checked_at.is_empty() {
+                record.models = unique_strings(models.into_iter().chain(record.models.clone()));
+            }
             if key_changed || base_changed || model_changed {
                 record.supported_clients = Vec::new();
                 record.client_support_probes = Vec::new();
@@ -300,6 +312,7 @@ impl KeydockStore {
                 masked_key,
                 model: selected_model,
                 models,
+                model_catalog_checked_at: String::new(),
                 supported_clients: Vec::new(),
                 client_support_probes: Vec::new(),
                 client_messages: HashMap::new(),
@@ -365,6 +378,7 @@ impl KeydockStore {
             if next_base_url != record.base_url {
                 record.available = false;
                 record.models = Vec::new();
+                record.model_catalog_checked_at.clear();
                 record.model = String::new();
                 record.supported_clients = Vec::new();
                 record.client_support_probes = Vec::new();
@@ -388,6 +402,9 @@ impl KeydockStore {
         }
         if let Some(models) = updates.models {
             record.models = unique_strings(models);
+        }
+        if let Some(checked_at) = updates.model_catalog_checked_at {
+            record.model_catalog_checked_at = trim(checked_at);
         }
         if let Some(available) = updates.available {
             record.available = available;
@@ -470,6 +487,8 @@ impl KeydockStore {
             .find(|item| item.id == id)
             .ok_or_else(|| "Key not found.".to_string())?;
         record.masked_key = mask_key(&api_key);
+        record.models.clear();
+        record.model_catalog_checked_at.clear();
         record.supported_clients = Vec::new();
         record.client_support_probes = Vec::new();
         record.client_messages = HashMap::new();
@@ -482,6 +501,28 @@ impl KeydockStore {
             .insert(id.to_string(), self.protect(&api_key));
         self.save_secrets(&secrets)?;
         self.save_list(records)
+    }
+
+    pub fn mark_model_listing(
+        &self,
+        id: impl AsRef<str>,
+        result: &ValidationResult,
+    ) -> Result<KeyRecord, String> {
+        if !result.valid {
+            return Err("Only a successful model listing can be saved.".to_string());
+        }
+        let timestamp = now_iso();
+        self.update_metadata(id, MetadataUpdate {
+            models: Some(result.models.clone()),
+            model_catalog_checked_at: Some(timestamp.clone()),
+            available: Some(true),
+            status_code: Some(result.status_code),
+            validation_message: Some(format!("Key accepted by the models endpoint. {} models returned; client inference was not rechecked.", result.models.len())),
+            last_validated_at: Some(timestamp),
+            // A catalog check neither grants new client support nor removes a
+            // previous client probe for the same credentials and model.
+            ..MetadataUpdate::default()
+        })
     }
 
     pub fn mark_validation(
@@ -618,6 +659,7 @@ impl KeydockStore {
                 masked_key: mask_key(&api_key),
                 model: selected_model,
                 models,
+                model_catalog_checked_at: String::new(),
                 supported_clients: normalize_supported_clients(item.supported_clients),
                 client_support_probes: unique_strings(item.client_support_probes),
                 client_messages: clean_client_messages(item.client_messages),
@@ -694,7 +736,7 @@ fn clean_client_messages(messages: HashMap<String, String>) -> HashMap<String, S
 }
 
 fn mark_codex_configured(record: &mut KeyRecord, timestamp: &str) {
-    if record.supported_clients.is_empty() {
+    if record.supported_clients.is_empty() && record.model_catalog_checked_at.is_empty() {
         record.available = false;
         record.status_code = 0;
         record.last_validated_at = String::new();
@@ -885,6 +927,142 @@ mod tests {
         assert!(active.client_support_checked_at.is_empty());
         assert!(active.last_validated_at.is_empty());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn codex_sync_preserves_the_provider_catalog_and_its_key_validation() {
+        let dir = std::env::temp_dir().join(format!("keydock-catalog-sync-{}", Uuid::new_v4()));
+        let store = KeydockStore::new(&dir);
+        let mut initial = ValidationResult::ok("Saved.", vec![]);
+        initial.model = "gpt-a".to_string();
+        let record = store
+            .add(
+                "Catalog",
+                "https://provider.test/v1",
+                "sk-catalog-test",
+                &initial,
+            )
+            .unwrap();
+        let mut profile = crate::codex::read_codex_profile(Some(dir.join("unused-codex-home")));
+        profile.configured = true;
+        profile.api_key = "sk-catalog-test".to_string();
+        profile.base_url = "https://provider.test/v1".to_string();
+        profile.model = "gpt-a".to_string();
+        profile.models = vec!["gpt-cache-only".to_string()];
+        profile.message.clear();
+        for catalog in [vec!["gpt-a".to_string()], vec![]] {
+            let checked = store
+                .mark_model_listing(
+                    &record.id,
+                    &ValidationResult::ok("Models loaded.", catalog.clone()),
+                )
+                .unwrap();
+            let synced = store.upsert_codex_profile(&profile).unwrap().unwrap();
+            assert_eq!(synced.models, catalog);
+            assert_eq!(
+                synced.model_catalog_checked_at,
+                checked.model_catalog_checked_at
+            );
+            assert!(!synced.model_catalog_checked_at.is_empty());
+            assert_eq!(synced.last_validated_at, checked.last_validated_at);
+            assert!(synced.available);
+            assert!(synced.supported_clients.is_empty());
+            assert!(synced.client_support_probes.is_empty());
+        }
+        let changed = store
+            .update_metadata(
+                &record.id,
+                MetadataUpdate {
+                    base_url: Some("https://different-provider.test/v1".to_string()),
+                    ..MetadataUpdate::default()
+                },
+            )
+            .unwrap();
+        assert!(changed.model_catalog_checked_at.is_empty());
+        store
+            .mark_model_listing(
+                &record.id,
+                &ValidationResult::ok("Models loaded.", vec!["gpt-b".to_string()]),
+            )
+            .unwrap();
+        store.set_secret(&record.id, "sk-new-catalog-key").unwrap();
+        let changed = store
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|item| item.id == record.id)
+            .unwrap();
+        assert!(changed.models.is_empty());
+        assert!(changed.model_catalog_checked_at.is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn model_listing_preserves_existing_client_verification() {
+        let dir = std::env::temp_dir().join(format!("keydock-model-listing-{}", Uuid::new_v4()));
+        let store = KeydockStore::new(&dir);
+        let mut validation = ValidationResult::ok("Codex verified.", vec!["gpt-a".to_string()]);
+        validation.model = "gpt-a".to_string();
+        validation.supported_clients = vec!["codex".to_string()];
+        validation.client_support_probes = vec!["codex:cli_exec".to_string()];
+        validation.client_messages.insert(
+            "codex".to_string(),
+            "Native inference completed.".to_string(),
+        );
+        let record = store
+            .add(
+                "Catalog",
+                "https://provider.test/v1",
+                "sk-test-only",
+                &validation,
+            )
+            .unwrap();
+        let listing = ValidationResult::ok(
+            "Models loaded.",
+            vec!["gpt-a".to_string(), "gpt-b".to_string()],
+        );
+        let updated = store.mark_model_listing(&record.id, &listing).unwrap();
+        assert_eq!(updated.models, listing.models);
+        assert_eq!(updated.model, "gpt-a");
+        assert_eq!(updated.supported_clients, record.supported_clients);
+        assert_eq!(updated.client_support_probes, record.client_support_probes);
+        assert_eq!(updated.client_messages, record.client_messages);
+        assert_eq!(
+            updated.client_support_checked_at,
+            record.client_support_checked_at
+        );
+        assert!(updated.available);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn model_listing_does_not_grant_client_support_and_clears_an_empty_catalog() {
+        let dir = std::env::temp_dir().join(format!("keydock-empty-models-{}", Uuid::new_v4()));
+        let store = KeydockStore::new(&dir);
+        let record = store
+            .add(
+                "Catalog",
+                "https://provider.test/v1",
+                "sk-test-only",
+                &ValidationResult::ok("Saved.", vec!["old-model".to_string()]),
+            )
+            .unwrap();
+        let updated = store
+            .mark_model_listing(&record.id, &ValidationResult::ok("No models.", vec![]))
+            .unwrap();
+        assert!(updated.models.is_empty());
+        assert!(updated.available);
+        assert!(updated.supported_clients.is_empty());
+        assert!(updated.client_support_probes.is_empty());
+        assert!(updated.client_messages.is_empty());
+        assert!(updated.client_support_checked_at.is_empty());
+        assert!(store
+            .mark_model_listing(
+                &record.id,
+                &ValidationResult::fail(401, "Invalid key", vec![])
+            )
+            .is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

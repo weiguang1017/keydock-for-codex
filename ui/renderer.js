@@ -2,7 +2,7 @@ let keys = [];
 let busy = false;
 let filterText = '';
 let draftValidation = null;
-let editValidation = null;
+let editModelListing = null;
 let editingId = null;
 let codexInfo = null;
 let draftTestRunning = false;
@@ -17,6 +17,7 @@ if (!window.keydock && typeof tauriInvoke === 'function') {
   window.keydock = {
     listKeys: () => tauriInvoke('list_keys'),
     testDraftKey: ({ id, baseUrl, apiKey, model }) => tauriInvoke('test_draft_key', { id, baseUrl, apiKey, model }),
+    fetchKeyModels: ({ id, baseUrl, apiKey }) => tauriInvoke('fetch_key_models', { id, baseUrl, apiKey }),
     addKey: ({ label, baseUrl, apiKey, model, validation }) => tauriInvoke('add_key', {
       label,
       baseUrl,
@@ -27,13 +28,13 @@ if (!window.keydock && typeof tauriInvoke === 'function') {
     updateName: ({ id, label }) => tauriInvoke('update_name', { id, label }),
     exportKeys: () => tauriInvoke('export_keys'),
     importKeys: ({ content }) => tauriInvoke('import_keys', { content }),
-    updateMetadata: ({ id, label, baseUrl, model, apiKey, validation }) => tauriInvoke('update_metadata', {
+    updateMetadata: ({ id, label, baseUrl, model, apiKey, modelListing }) => tauriInvoke('update_metadata', {
       id,
       label,
       baseUrl,
       model,
       apiKey,
-      validation
+      modelListing
     }),
     deleteKey: ({ id }) => tauriInvoke('delete_key', { id }),
     validateKey: ({ id }) => tauriInvoke('validate_key_cmd', { id }),
@@ -126,12 +127,19 @@ const translations = {
     notChecked: 'Not checked',
     notNetworkVerified: 'Network not verified',
     noModels: 'No models reported yet',
+    noMatchingModels: 'No matching models. You can type a model name manually.',
     keyWillBeChecked: 'Test the key to load available models, then add it to Keydock.',
     footerMessage: 'Terminal Codex sessions must be reopened after switching.',
     checkingBeforeSave: 'Checking key before saving...',
     testingDraft: 'Testing key...',
     testPassed: 'Key is valid. Models loaded.',
     testFailed: 'Key test failed.',
+    fetchModels: 'Fetch models',
+    fetchingModels: 'Fetching models and checking key...',
+    modelsFetched: 'Key accepted by the models endpoint. Loaded {count} models.',
+    modelListingEmpty: 'Key accepted by the models endpoint, but no models were returned. You can enter a model manually.',
+    fetchModelsFailed: 'Could not fetch models.',
+    fetchModelsNote: 'Fetch models to check the key and load the platform\'s model list. Use Check on the key card to test client inference.',
     testBeforeAdd: 'Test this key before adding it.',
     modelRequiredManual: 'No models were returned. Type a model name manually, then test again.',
     savedValidated: 'Key saved and validated.',
@@ -252,12 +260,19 @@ const translations = {
     notChecked: '未检测',
     notNetworkVerified: '网络未验证',
     noModels: '还没有返回模型',
+    noMatchingModels: '没有匹配的模型，可手动输入模型名。',
     keyWillBeChecked: '先测试 Key 并加载可用模型，然后再添加到 Keydock。',
     footerMessage: '切换后需要重新打开终端里的 Codex 会话。',
     checkingBeforeSave: '正在检查 Key，检查通过后保存...',
     testingDraft: '正在测试 Key...',
     testPassed: 'Key 可用，已加载模型。',
     testFailed: 'Key 测试失败。',
+    fetchModels: '获取模型',
+    fetchingModels: '正在获取模型并校验 Key...',
+    modelsFetched: 'Key 已通过模型接口校验，获取到 {count} 个模型。',
+    modelListingEmpty: 'Key 已通过模型接口校验，但平台未返回模型，可手动输入模型名。',
+    fetchModelsFailed: '获取模型失败。',
+    fetchModelsNote: '获取模型可校验 Key 并读取平台模型列表；实际调用状态请使用卡片上的“检测”。',
     testBeforeAdd: '请先测试这个 Key，再添加。',
     modelRequiredManual: '没有获取到模型列表，请手动输入模型名后再测试。',
     savedValidated: 'Key 已保存并验证通过。',
@@ -378,12 +393,19 @@ const translations = {
     notChecked: '未確認',
     notNetworkVerified: 'ネットワーク未確認',
     noModels: 'モデルはまだ取得されていません',
+    noMatchingModels: '一致するモデルがありません。モデル名を手動で入力できます。',
     keyWillBeChecked: 'キーをテストして利用可能なモデルを読み込み、その後 Keydock に追加します。',
     footerMessage: '切替後、ターミナルの Codex セッションは開き直してください。',
     checkingBeforeSave: '保存前にキーを確認しています...',
     testingDraft: 'キーをテストしています...',
     testPassed: 'キーは有効です。モデルを読み込みました。',
     testFailed: 'キーテストに失敗しました。',
+    fetchModels: 'モデルを取得',
+    fetchingModels: 'モデルを取得してキーを確認しています...',
+    modelsFetched: 'モデル API でキーを確認しました。{count} 個のモデルを取得しました。',
+    modelListingEmpty: 'モデル API でキーを確認しましたが、モデルは返されませんでした。モデル名を手動入力できます。',
+    fetchModelsFailed: 'モデルを取得できませんでした。',
+    fetchModelsNote: 'モデルを取得してキーとモデル一覧を確認します。実際の推論はキーカードの「確認」でテストしてください。',
     testBeforeAdd: '追加する前にこのキーをテストしてください。',
     modelRequiredManual: 'モデル一覧を取得できませんでした。モデル名を手動入力してから再テストしてください。',
     savedValidated: 'キーを保存し、確認しました。',
@@ -782,6 +804,7 @@ function syncActionControls() {
     editButton.disabled = busy || editTestRunning;
     editButton.setAttribute('aria-busy', editTestRunning ? 'true' : 'false');
   }
+  $('saveEdit').disabled = busy || editTestRunning;
   $('addButton').disabled = busy;
 }
 
@@ -1182,18 +1205,19 @@ function comboInput(combo) {
   return combo.querySelector('.combo-input');
 }
 
-function renderComboMenu(combo) {
+function renderComboMenu(combo, query = '') {
   const menu = comboMenu(combo);
   const input = comboInput(combo);
   if (!menu || !input) return;
   const models = comboModels.get(combo) || [];
-  const filter = (input.value || '').trim().toLowerCase();
+  // Opening a selected value must show the entire catalog. Only typing filters it.
+  const filter = query.trim().toLowerCase();
   const matches = filter ? models.filter((model) => model.toLowerCase().includes(filter)) : models;
   menu.innerHTML = '';
   if (matches.length === 0) {
     const empty = document.createElement('li');
     empty.className = 'combo-empty';
-    empty.textContent = t('noModels');
+    empty.textContent = t(models.length ? 'noMatchingModels' : 'noModels');
     menu.append(empty);
     return;
   }
@@ -1202,6 +1226,9 @@ function renderComboMenu(combo) {
     option.className = 'combo-option';
     option.textContent = model;
     option.dataset.value = model;
+    option.id = `${combo.id}-option-${menu.children.length}`;
+    option.setAttribute('role', 'option');
+    option.setAttribute('aria-selected', String(model === input.value));
     if (model === input.value) option.classList.add('selected');
     menu.append(option);
   }
@@ -1210,22 +1237,49 @@ function renderComboMenu(combo) {
 function closeAllCombos(except) {
   document.querySelectorAll('.combo').forEach((combo) => {
     if (combo === except) return;
-    const menu = comboMenu(combo);
-    if (menu) menu.classList.add('hidden');
-    combo.classList.remove('open');
+    closeCombo(combo);
   });
 }
 
-function openCombo(combo) {
+function positionComboMenu(combo) {
+  const bounds = combo.getBoundingClientRect();
+  const dialog = combo.closest('dialog')?.getBoundingClientRect();
+  const top = Math.max(0, dialog?.top ?? 0) + 8;
+  const bottom = Math.min(window.innerHeight, dialog?.bottom ?? window.innerHeight) - 8;
+  const below = bottom - bounds.bottom - 4;
+  const above = bounds.top - top - 4;
+  const upwards = below < 160 && above > below;
+  combo.classList.toggle('drop-up', upwards);
+  combo.style.setProperty('--combo-menu-height', `${Math.max(32, Math.min(208, upwards ? above : below))}px`);
+}
+
+function openCombo(combo, query = '') {
   closeAllCombos(combo);
-  renderComboMenu(combo);
+  renderComboMenu(combo, query);
+  positionComboMenu(combo);
   comboMenu(combo)?.classList.remove('hidden');
   combo.classList.add('open');
+  comboInput(combo)?.setAttribute('aria-expanded', 'true');
+  comboInput(combo)?.removeAttribute('aria-activedescendant');
 }
 
 function closeCombo(combo) {
   comboMenu(combo)?.classList.add('hidden');
   combo.classList.remove('open');
+  comboInput(combo)?.setAttribute('aria-expanded', 'false');
+  comboInput(combo)?.removeAttribute('aria-activedescendant');
+}
+
+function selectComboOption(combo, option) {
+  const input = comboInput(combo);
+  if (!input || !option) return;
+  if (input.value !== option.dataset.value) {
+    input.value = option.dataset.value || '';
+    // Programmatic selection must invalidate a test of the previous model too.
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  closeCombo(combo);
+  input.focus();
 }
 
 function initCombo(combo) {
@@ -1234,6 +1288,12 @@ function initCombo(combo) {
   const toggle = combo.querySelector('.combo-toggle');
   const menu = comboMenu(combo);
   if (!input || !toggle || !menu) return;
+  menu.id = `${combo.id}-listbox`;
+  menu.setAttribute('role', 'listbox');
+  input.setAttribute('role', 'combobox');
+  input.setAttribute('aria-autocomplete', 'list');
+  input.setAttribute('aria-controls', menu.id);
+  input.setAttribute('aria-expanded', 'false');
   toggle.addEventListener('click', (event) => {
     event.preventDefault();
     if (combo.classList.contains('open')) {
@@ -1244,22 +1304,49 @@ function initCombo(combo) {
     }
   });
   input.addEventListener('click', () => openCombo(combo));
-  input.addEventListener('input', () => openCombo(combo));
+  input.addEventListener('input', () => openCombo(combo, input.value));
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && combo.classList.contains('open')) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeCombo(combo);
+    } else if (event.key === 'Tab') {
+      closeCombo(combo);
+    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (!combo.classList.contains('open')) openCombo(combo);
+      const options = [...menu.querySelectorAll('.combo-option')];
+      if (!options.length) return;
+      let index = options.findIndex((option) => option.id === input.getAttribute('aria-activedescendant'));
+      if (index < 0) index = event.key === 'ArrowDown' ? 0 : options.length - 1;
+      else index = (index + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length;
+      options.forEach((option, i) => option.classList.toggle('active', i === index));
+      input.setAttribute('aria-activedescendant', options[index].id);
+      options[index].scrollIntoView({ block: 'nearest' });
+    } else if (event.key === 'Enter' && combo.classList.contains('open')) {
+      event.preventDefault();
+      const active = menu.querySelector('.combo-option.active');
+      if (active) selectComboOption(combo, active);
+      else closeCombo(combo);
+    }
+  });
   // Use mousedown so the value is set before the input loses focus.
   menu.addEventListener('mousedown', (event) => {
     const option = event.target.closest('.combo-option');
     if (!option) return;
     event.preventDefault();
-    input.value = option.dataset.value || '';
-    closeCombo(combo);
+    selectComboOption(combo, option);
   });
+  combo.closest('dialog')?.addEventListener('close', () => closeCombo(combo));
 }
 
 function setModelOptions(input, models, selectedModel) {
-  const normalized = Array.isArray(models) ? models.filter(Boolean) : [];
+  const normalized = [...new Set((Array.isArray(models) ? models : [])
+    .filter((model) => typeof model === 'string')
+    .map((model) => model.trim()).filter(Boolean))];
   const combo = input.closest('.combo');
   if (combo) comboModels.set(combo, normalized);
-  if (selectedModel && (normalized.length === 0 || normalized.includes(selectedModel))) {
+  if (selectedModel) {
     input.value = selectedModel;
   } else if (normalized.length > 0) {
     input.value = normalized[0];
@@ -1287,11 +1374,11 @@ function setAddStatus(text, state = '') {
   node.className = `dialog-status${state ? ` ${state}` : ''}`;
 }
 
-function clearDraftValidation() {
+function clearDraftValidation({ resetModels = false } = {}) {
   draftTestSeq += 1;
   const manualModel = $('newModelField').value.trim();
   draftValidation = null;
-  setModelOptions($('newModelField'), [], manualModel);
+  if (resetModels) setModelOptions($('newModelField'), [], manualModel);
   setAddStatus('');
   syncActionControls();
 }
@@ -1340,6 +1427,7 @@ async function testDraftKey() {
     const model = $('newModelField').value.trim();
     const result = await window.keydock.testDraftKey({ baseUrl, apiKey, model });
     if (token !== draftTestSeq || fingerprint !== draftFingerprint()) return null;
+    if (result?.models?.length) setDraftModels(result.models, model || result.model || '');
     if (!result?.valid) {
       clearDraftValidation();
       if (!model && needsManualModel(result)) {
@@ -1398,7 +1486,7 @@ function resetAddForm() {
   $('newKey').value = '';
   $('newKey').type = 'password';
   updateRevealIcon();
-  clearDraftValidation();
+  clearDraftValidation({ resetModels: true });
 }
 
 function openAddDialog() {
@@ -1425,14 +1513,14 @@ function editFingerprint() {
   return [
     editingId || '',
     $('editBaseUrl').value.trim(),
-    $('editKey').value.trim(),
-    $('editModelField').value.trim()
+    $('editKey').value.trim()
   ].join('\n');
 }
 
 function clearEditValidation() {
   editTestSeq += 1;
-  editValidation = null;
+  editModelListing = null;
+  setEditStatus('');
 }
 
 function openEditDialog(id) {
@@ -1450,7 +1538,7 @@ function openEditDialog(id) {
   $('editDialog').showModal();
 }
 
-async function testEditKey() {
+async function fetchEditModels() {
   if (!editingId) return null;
   if (!requireBridge()) {
     setEditStatus(t('noBridge'), 'bad');
@@ -1463,35 +1551,36 @@ async function testEditKey() {
     setEditStatus(t('missingBaseUrl'), 'bad');
     return null;
   }
-  setEditStatus(t('testingDraft'), 'pending');
-  // Probe with the values currently typed in the edit form (a blank API key
-  // falls back to the stored secret). Do not refresh the list while testing.
+  setEditStatus(t('fetchingModels'), 'pending');
+  // Read only the model catalog with these credentials. A blank key uses the
+  // saved secret; model selection is independent from catalog authentication.
   const token = ++editTestSeq;
   editTestActive = token;
   const fingerprint = editFingerprint();
   try {
     setEditTesting(true);
-    $('message').textContent = t('testingDraft');
-    const model = $('editModelField').value.trim();
-    const result = await window.keydock.testDraftKey({ id: editingId, baseUrl, apiKey, model });
+    $('message').textContent = t('fetchingModels');
+    const result = await window.keydock.fetchKeyModels({ id: editingId, baseUrl, apiKey });
     if (token !== editTestSeq || fingerprint !== editFingerprint()) return null;
     if (!result?.valid) {
       clearEditValidation();
-      setEditStatus(result?.message || t('testFailed'), 'bad');
+      setModelOptions($('editModelField'), [], $('editModelField').value);
+      setEditStatus(result?.message || t('fetchModelsFailed'), 'bad');
       return null;
     }
-    setModelOptions($('editModelField'), result.models || [], $('editModelField').value || result.model || '');
-    editValidation = { ...result, fingerprint: editFingerprint() };
-    const modelCount = Array.isArray(result.models) ? result.models.length : 0;
+    const models = Array.isArray(result.models) ? result.models : [];
+    const model = $('editModelField').value.trim();
+    setModelOptions($('editModelField'), models, !models.length || models.includes(model) ? model : models[0]);
+    editModelListing = { ...result, fingerprint: editFingerprint() };
     setEditStatus(
-      modelCount > 0 ? `${t('testPassed')} (${t('modelsBadge', { count: modelCount })})` : t('testPassedNoModels'),
+      models.length ? t('modelsFetched', { count: models.length }) : t('modelListingEmpty'),
       'ok'
     );
     return result;
   } catch (error) {
     if (token === editTestSeq) {
       clearEditValidation();
-      setEditStatus(errorText(error, 'testFailed'), 'bad');
+      setEditStatus(errorText(error, 'fetchModelsFailed'), 'bad');
     }
     return null;
   } finally {
@@ -1508,8 +1597,8 @@ async function saveEdit() {
   const baseUrl = requireValue('editBaseUrl', 'missingBaseUrl');
   if (!label || !baseUrl) return;
   const apiKey = $('editKey').value.trim();
-  const validation = editValidation?.valid && editValidation.fingerprint === editFingerprint()
-    ? editValidation
+  const modelListing = editModelListing?.valid && editModelListing.fingerprint === editFingerprint()
+    ? editModelListing
     : undefined;
   const record = await withAction(t('savingDetails'), () => window.keydock.updateMetadata({
     id: editingId,
@@ -1517,7 +1606,7 @@ async function saveEdit() {
     baseUrl,
     model: $('editModelField').value,
     apiKey: apiKey || undefined,
-    validation
+    modelListing
   }));
   if (!record) return;
   $('message').textContent = record.active ? `${t('detailsSaved')} ${t('cliReminder')}` : t('detailsSaved');
@@ -1744,19 +1833,23 @@ $('saveEdit').addEventListener('click', (event) => {
 });
 
 $('validateEditButton').addEventListener('click', () => {
-  testEditKey();
+  fetchEditModels();
 });
 
 $('detailClose').addEventListener('click', () => {
   $('detailDialog').close();
 });
 
-for (const id of ['newBaseUrl', 'newKey', 'newModelField']) {
-  $(id).addEventListener('input', clearDraftValidation);
+for (const id of ['newBaseUrl', 'newKey']) {
+  $(id).addEventListener('input', () => clearDraftValidation({ resetModels: true }));
 }
+$('newModelField').addEventListener('input', clearDraftValidation);
 
-for (const id of ['editBaseUrl', 'editKey', 'editModelField']) {
-  $(id).addEventListener('input', clearEditValidation);
+for (const id of ['editBaseUrl', 'editKey']) {
+  $(id).addEventListener('input', () => {
+    clearEditValidation();
+    setModelOptions($('editModelField'), [], $('editModelField').value);
+  });
 }
 
 $('keyGrid').addEventListener('click', (event) => {

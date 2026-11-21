@@ -8,41 +8,137 @@ use crate::validate::trim;
 pub fn find_codex_path() -> Result<PathBuf, String> {
     if let Ok(path) = std::env::var("CKM_CODEX_PATH") {
         let path = PathBuf::from(path);
-        if path.exists() {
-            return Ok(path);
-        }
-    }
-
-    if let Ok(path) = shell_lookup() {
-        if path.exists() {
+        if is_executable_file(&path) {
             return Ok(path);
         }
     }
 
     let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
-    let mut candidates = vec![
-        PathBuf::from("/opt/homebrew/bin/codex"),
-        PathBuf::from("/usr/local/bin/codex"),
-        home.join(".local/bin/codex"),
-        home.join(".nvm/current/bin/codex"),
-    ];
-    let nvm_root = home.join(".nvm/versions/node");
-    if let Ok(entries) = std::fs::read_dir(nvm_root) {
-        let mut versions = entries
-            .flatten()
-            .map(|entry| entry.path())
-            .collect::<Vec<_>>();
-        versions.sort();
-        versions.reverse();
-        for version in versions {
-            candidates.push(version.join("bin/codex"));
-        }
+    let path_dirs = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let application_dirs = if cfg!(target_os = "macos") {
+        vec![PathBuf::from("/Applications"), home.join("Applications")]
+    } else {
+        Vec::new()
+    };
+    // Finder-launched apps do not inherit terminal PATH or shell setup. Look
+    // for real installations directly before trying a login shell.
+    let mut candidates = codex_install_candidates(&home, &path_dirs, &application_dirs);
+    for directory in common_command_dirs() {
+        append_codex_commands(&mut candidates, &directory);
+    }
+    if let Some(path) = candidates.into_iter().find(|path| is_executable_file(path)) {
+        return Ok(path);
     }
 
+    shell_lookup().map_err(|_| {
+        "Codex executable was not found in PATH, desktop app bundles, or local installations. Install Codex/ChatGPT Desktop or set CKM_CODEX_PATH to the Codex executable.".to_string()
+    })
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn codex_command_names() -> &'static [&'static str] {
+    if cfg!(target_os = "windows") {
+        &["codex.exe", "codex.cmd", "codex"]
+    } else {
+        &["codex"]
+    }
+}
+
+fn append_codex_commands(candidates: &mut Vec<PathBuf>, directory: &Path) {
+    candidates.extend(
+        codex_command_names()
+            .iter()
+            .map(|name| directory.join(name)),
+    );
+}
+
+fn codex_install_candidates(
+    home: &Path,
+    path_dirs: &[PathBuf],
+    application_dirs: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    for directory in path_dirs {
+        append_codex_commands(&mut candidates, directory);
+    }
+    for directory in application_dirs {
+        for app in ["Codex.app", "ChatGPT.app"] {
+            let resources = directory.join(app).join("Contents/Resources");
+            // Standalone Codex Desktop and the Codex runtime inside ChatGPT
+            // ship native executables; these do not need a Node.js install.
+            candidates.push(resources.join("codex"));
+            candidates.push(resources.join("codex-cli/CodexCLI.app/Contents/MacOS/codex"));
+            candidates.push(resources.join("codex-cli/bin/codex"));
+        }
+    }
+    append_versioned_codex_commands(
+        &mut candidates,
+        &home.join(".codex/packages/app-server-daemon/releases"),
+    );
+    for directory in [
+        ".hermes/node/bin",
+        ".local/bin",
+        ".codex/bin",
+        ".cargo/bin",
+        ".npm-global/bin",
+        ".volta/bin",
+        ".nvm/current/bin",
+        "Library/pnpm",
+    ] {
+        append_codex_commands(&mut candidates, &home.join(directory));
+    }
+    append_versioned_codex_commands(&mut candidates, &home.join(".nvm/versions/node"));
     candidates
-        .into_iter()
-        .find(|path| path.exists())
-        .ok_or_else(|| "Codex CLI was not found. Configure codex in your shell first.".to_string())
+}
+
+fn append_versioned_codex_commands(candidates: &mut Vec<PathBuf>, root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    let mut versions = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    let version_numbers = |path: &Path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("")
+            .trim_start_matches('v')
+            .split('-')
+            .next()
+            .unwrap_or("")
+            .split('.')
+            .map(|part| part.parse::<u32>().unwrap_or(0))
+            .collect::<Vec<_>>()
+    };
+    versions.sort_by(|left, right| {
+        version_numbers(right)
+            .cmp(&version_numbers(left))
+            .then_with(|| right.cmp(left))
+    });
+    for version in versions {
+        append_codex_commands(candidates, &version.join("bin"));
+    }
 }
 
 pub fn read_codex_login(codex_path: &PathBuf) -> Result<String, String> {
@@ -118,6 +214,13 @@ fn common_command_dirs() -> Vec<PathBuf> {
         dirs.push(home.join(".local/bin"));
         dirs.push(home.join(".hermes/node/bin"));
         dirs.push(home.join(".nvm/current/bin"));
+        // An npm shim discovered under another Node installation needs its
+        // sibling `node`, even when the GUI's inherited PATH is minimal.
+        if let Ok(entries) = std::fs::read_dir(home.join(".nvm/versions/node")) {
+            for entry in entries.flatten() {
+                dirs.push(entry.path().join("bin"));
+            }
+        }
     }
     dirs
 }
@@ -482,15 +585,119 @@ fn shell_lookup() -> Result<PathBuf, String> {
     let stdout = trim(String::from_utf8_lossy(&output.stdout));
     stdout
         .lines()
-        .next()
+        .map(trim)
         .map(PathBuf::from)
-        .filter(|path| !path.as_os_str().is_empty())
+        .find(|path| path.is_absolute() && is_executable_file(path))
         .ok_or_else(|| "codex was not found in PATH.".to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_executable(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "test executable").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+
+    #[test]
+    fn discovers_desktop_codex_without_path_or_a_login_shell() {
+        let root = std::env::temp_dir().join(format!("keydock-discovery-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let applications = root.join("Applications");
+        for relative in [
+            "ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+            "Codex.app/Contents/Resources/codex",
+        ] {
+            let executable = applications.join(relative);
+            test_executable(&executable);
+            let found = codex_install_candidates(&home, &[], std::slice::from_ref(&applications))
+                .into_iter()
+                .find(|path| is_executable_file(path));
+            assert_eq!(found.as_ref(), Some(&executable));
+            std::fs::remove_file(executable).unwrap();
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn discovers_hermes_managed_codex_without_shell_setup() {
+        let home =
+            std::env::temp_dir().join(format!("keydock-hermes-discovery-{}", uuid::Uuid::new_v4()));
+        let executable = home.join(".hermes/node/bin").join(codex_command_names()[0]);
+        test_executable(&executable);
+        let found = codex_install_candidates(&home, &[], &[])
+            .into_iter()
+            .find(|path| is_executable_file(path));
+        std::fs::remove_dir_all(home).unwrap();
+        assert_eq!(found, Some(executable));
+    }
+
+    #[test]
+    fn discovers_the_newest_app_server_runtime() {
+        let home = std::env::temp_dir().join(format!(
+            "keydock-runtime-discovery-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let root = home.join(".codex/packages/app-server-daemon/releases");
+        let mut newest = PathBuf::new();
+        for version in [
+            "0.99.0-aarch64-apple-darwin",
+            "0.171.0-aarch64-apple-darwin",
+        ] {
+            let executable = root
+                .join(version)
+                .join("bin")
+                .join(codex_command_names()[0]);
+            test_executable(&executable);
+            newest = executable;
+        }
+        let found = codex_install_candidates(&home, &[], &[])
+            .into_iter()
+            .find(|path| is_executable_file(path));
+        std::fs::remove_dir_all(home).unwrap();
+        assert_eq!(found, Some(newest));
+    }
+
+    #[test]
+    fn candidates_reject_directories_and_non_executable_files() {
+        let root =
+            std::env::temp_dir().join(format!("keydock-invalid-codex-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(!is_executable_file(&root));
+        assert!(!is_executable_file(&root.join("missing")));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let file = root.join("codex");
+            std::fs::write(&file, "not executable").unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(!is_executable_file(&file));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires a real locally installed Codex; run with a minimal GUI PATH"]
+    fn installed_codex_is_discovered_and_starts() {
+        let path = find_codex_path().unwrap();
+        let output = Command::new(&path).arg("--version").output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        println!(
+            "Discovered {}: {}",
+            path.display(),
+            trim(String::from_utf8_lossy(&output.stdout))
+        );
+    }
 
     #[test]
     fn wait_for_polls_until_true_or_timeout() {
